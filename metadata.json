@@ -1,0 +1,8 @@
+{
+  "name": "Remix WarHeads 1997 - Tactical Planetary Artillery",
+  "description": "Photorealistic 2D orbital artillery game clone of the 1997 classic WarHeads with destructible planets, procedural noise textures, 20 tactical weapons, and toroidal physics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

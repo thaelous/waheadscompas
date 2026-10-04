@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+html, body, #root, #game-container {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Custom retro military scrollbars for touch and desktop */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
+}
+
+/* Sci-fi cyan stylized scrollbar for configuration modals */
+.sci-fi-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+.sci-fi-scrollbar::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.95);
+  border: 1px solid rgba(14, 116, 144, 0.4);
+  border-radius: 6px;
+}
+.sci-fi-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #06b6d4, #0284c7);
+  border-radius: 6px;
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.7);
+}
+.sci-fi-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #22d3ee, #0ea5e9);
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.4), inset 0 0 15px rgba(6, 182, 212, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 35px rgba(6, 182, 212, 0.8), inset 0 0 25px rgba(6, 182, 212, 0.4);
+  }
+}
+
+.glow-btn {
+  animation: pulseGlow 2.5s infinite ease-in-out;
+}
