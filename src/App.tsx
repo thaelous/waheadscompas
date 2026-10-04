@@ -79,6 +79,12 @@ export default function App() {
   const [touchAimData, setTouchAimData] = useState<TouchAimData | null>(null);
   const [selectedWeaponCategory, setSelectedWeaponCategory] = useState<'all' | 'ballistic' | 'explosive' | 'special' | 'exotic'>('all');
 
+  // PWA Install States
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+  const [showIOSGuide, setShowIOSGuide] = useState(false);
+
   // Weapon Matrix Dialog
   const [showWeaponMatrix, setShowWeaponMatrix] = useState(false);
 
@@ -193,6 +199,48 @@ export default function App() {
       window.removeEventListener('orientationchange', checkLayout);
     };
   }, []);
+
+  // PWA Install Event Listener & Safari iOS detection
+  useEffect(() => {
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    setIsInstalled(isStandalone);
+
+    const ua = window.navigator.userAgent.toLowerCase();
+    setIsIOS(/iphone|ipad|ipod/.test(ua));
+
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallPWA = async () => {
+    triggerHaptic(20);
+    if (deferredPrompt) {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice && choice.outcome === 'accepted') {
+        setIsInstalled(true);
+        setDeferredPrompt(null);
+      }
+    } else if (isIOS) {
+      setShowIOSGuide(prev => !prev);
+    }
+  };
 
   // Initialize WarHeads Engine
   useEffect(() => {
@@ -628,6 +676,24 @@ export default function App() {
               <Target className="w-5 h-5 text-cyan-200 animate-spin-slow" />
               <span>[ ENTRAR AL SISTEMA / CONFIGURAR COMBATE ]</span>
             </button>
+
+            {/* Botón de Instalación Táctil PWA */}
+            {!isInstalled && (deferredPrompt || isIOS) && (
+              <button
+                onClick={handleInstallPWA}
+                className="mt-3 px-6 py-3 bg-slate-900/90 border border-emerald-500 hover:border-emerald-400 text-emerald-400 hover:text-emerald-300 font-bold text-xs sm:text-sm tracking-wider uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2.5 w-full sm:w-auto"
+              >
+                <Smartphone className="w-4 h-4 text-emerald-400" />
+                <span>[ 📲 INSTALAR EN EL DISPOSITIVO ]</span>
+              </button>
+            )}
+
+            {/* Micro-tooltip para Safari en iOS */}
+            {isIOS && !isInstalled && (
+              <div className="mt-2 text-[11px] text-slate-400 bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded-lg max-w-sm">
+                Pulsa <strong className="text-cyan-300">Compartir</strong> (⎋) y luego <strong className="text-cyan-300">'Agregar al inicio'</strong> para instalar.
+              </div>
+            )}
 
             {/* Botón secundario rápido */}
             <button
@@ -1823,6 +1889,22 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* Botón de Instalación PWA en Menú si no está instalado */}
+              {!isInstalled && (deferredPrompt || isIOS) && (
+                <div className="p-3 bg-slate-900 border border-emerald-500/60 rounded-lg flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="text-xs text-emerald-300 font-bold">ACCESO DIRECTO PWA:</span>
+                  </div>
+                  <button
+                    onClick={handleInstallPWA}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                  >
+                    [ 📲 INSTALAR EN EL DISPOSITIVO ]
+                  </button>
+                </div>
+              )}
 
               {/* BOTÓN SOBREDIMENSIONADO Y BRILLANTE DE LANZAMIENTO */}
               <div className="sticky bottom-0 pt-2 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent shrink-0">
