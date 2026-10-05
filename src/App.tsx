@@ -8,12 +8,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   WarHeadsEngine,
-  VIEW_WIDTH,
-  VIEW_HEIGHT,
   Ship,
   PlayerId,
   ShipModel,
-  GameConfig
+  GameConfig,
+  SHIELD_CATALOG,
+  ShieldType,
+  ShieldDef
 } from './warheads/engine';
 import { WEAPON_CATALOG, WeaponDef } from './warheads/weapons';
 import { sound } from './warheads/audio';
@@ -43,7 +44,8 @@ import {
   Copy,
   Check,
   Compass,
-  Sparkles
+  Sparkles,
+  Settings
 } from 'lucide-react';
 
 interface TouchAimData {
@@ -87,6 +89,7 @@ export default function App() {
 
   // Weapon Matrix Dialog
   const [showWeaponMatrix, setShowWeaponMatrix] = useState(false);
+  const [showShieldMatrix, setShowShieldMatrix] = useState(false);
 
   // Splash Screen & Modals
   const [showSplashScreen, setShowSplashScreen] = useState(true);
@@ -112,6 +115,7 @@ export default function App() {
   // Current active ship
   const activeShip = ships.find(s => s.id === currentTurn) || ships[0];
   const activeWeapon = WEAPON_CATALOG.find(w => w.id === activeShip?.weaponId) || WEAPON_CATALOG[0];
+  const activeShield = SHIELD_CATALOG.find(s => s.id === activeShip?.shieldType) || SHIELD_CATALOG[0];
 
   // Mobile Haptic Vibration Feedback
   const triggerHaptic = useCallback((pattern: number | number[] = 15) => {
@@ -244,9 +248,30 @@ export default function App() {
 
   // Initialize WarHeads Engine
   useEffect(() => {
-    if (!canvasRef.current) return;
-    const engine = new WarHeadsEngine(canvasRef.current);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Synchronize canvas logical resolution with visible client dimensions (Zero black bars)
+    const syncCanvasSize = () => {
+      const w = canvas.clientWidth || window.innerWidth;
+      const h = canvas.clientHeight || (window.innerHeight - 245);
+      if (w > 0 && h > 0) {
+        canvas.width = w;
+        canvas.height = h;
+        if (engineRef.current) {
+          engineRef.current.resize(w, h);
+          setShips([...engineRef.current.ships]);
+        }
+      }
+    };
+
+    syncCanvasSize();
+    const engine = new WarHeadsEngine(canvas);
     engineRef.current = engine;
+    syncCanvasSize();
+
+    window.addEventListener('resize', syncCanvasSize);
+    window.addEventListener('orientationchange', syncCanvasSize);
 
     engine.onTurnChange = (newTurn) => {
       setCurrentTurn(newTurn);
@@ -311,6 +336,8 @@ export default function App() {
     });
 
     return () => {
+      window.removeEventListener('resize', syncCanvasSize);
+      window.removeEventListener('orientationchange', syncCanvasSize);
       engine.destroy();
     };
   }, []);
@@ -363,6 +390,19 @@ export default function App() {
     sound.playBeep(720, 0.05);
     setShowWeaponMatrix(false);
     setShips([...engineRef.current.ships]);
+  }, [currentTurn, isSimulating, winner, triggerHaptic]);
+
+
+  const selectShield = useCallback((shieldId: ShieldType) => {
+    if (!engineRef.current || isSimulating || winner) return;
+    const currentShip = engineRef.current.ships.find(s => s.id === currentTurn);
+    if (!currentShip || currentShip.isAI) return;
+    const success = engineRef.current.selectShield(shieldId);
+    if (success) {
+      triggerHaptic(20);
+      sound.playBeep(640, 0.08);
+      setShips([...engineRef.current.ships]);
+    }
   }, [currentTurn, isSimulating, winner, triggerHaptic]);
 
   // Fire Weapon
@@ -542,10 +582,8 @@ export default function App() {
   const updateAimFromPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current || !engineRef.current || !activeShip) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const scaleX = 1280 / rect.width;
-    const scaleY = 720 / rect.height;
-    const canvasX = (e.clientX - rect.left) * scaleX;
-    const canvasY = (e.clientY - rect.top) * scaleY;
+    const canvasX = e.clientX - rect.left;
+    const canvasY = e.clientY - rect.top;
 
     const container = canvasRef.current.parentElement;
     let shipScreenX = 0;
@@ -555,8 +593,8 @@ export default function App() {
 
     if (container) {
       const cRect = container.getBoundingClientRect();
-      shipScreenX = (activeShip.x / scaleX) + (rect.left - cRect.left);
-      shipScreenY = (activeShip.y / scaleY) + (rect.top - cRect.top);
+      shipScreenX = activeShip.x + (rect.left - cRect.left);
+      shipScreenY = activeShip.y + (rect.top - cRect.top);
       touchScreenX = e.clientX - cRect.left;
       touchScreenY = e.clientY - cRect.top;
     }
@@ -622,7 +660,22 @@ export default function App() {
   }, [handleFire, handleHyperJump, adjustAngle, adjustPower, activeShip]);
 
   return (
-    <div id="game-container" className="fixed inset-0 w-full h-full overflow-hidden bg-black font-sans text-slate-200 select-none flex flex-col touch-none">
+    <div
+      id="game-container"
+      className="fixed top-0 left-0 w-screen h-[100dvh] overflow-hidden bg-black font-sans text-slate-200 select-none flex flex-col touch-none"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100vw',
+        height: '100dvh',
+        overflow: 'hidden',
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        touchAction: 'none',
+        userSelect: 'none'
+      }}
+    >
       {/* 1. PANTALLA DE PRESENTACIÓN (SPLASH SCREEN RETRO-SCIFI EN ESPAÑOL) */}
       {showSplashScreen && (
         <div className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center p-4 select-none overflow-hidden font-mono">
@@ -732,133 +785,86 @@ export default function App() {
         </div>
       )}
 
-      {/* TOP MILITARY STATUS BAR */}
-      <header className="flex items-center justify-between px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border-b border-cyan-900/60 shadow-lg z-20 shrink-0 font-mono">
-        <div className="flex items-center gap-1.5 sm:gap-3">
-          <button
-            onClick={() => setShowSplashScreen(true)}
-            className="flex items-center gap-1 sm:gap-1.5 px-2 py-0.5 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-600/50 rounded text-cyan-400 text-[11px] sm:text-xs font-bold tracking-wider uppercase transition-colors cursor-pointer"
-            title="Volver a la Pantalla de Presentación"
-          >
-            <Crosshair className="w-3.5 h-3.5 animate-pulse text-cyan-400" />
-            <span className="hidden xs:inline">WARHEADS</span>
-            <span className="xs:hidden">WH97</span>
-          </button>
-
-          {/* Turno activo */}
-          <div
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded border bg-slate-900 text-[10px] sm:text-xs font-black shadow"
-            style={{ borderColor: activeShip?.color || '#38bdf8' }}
-          >
-            <span className="w-2 h-2 rounded-full animate-ping" style={{ backgroundColor: activeShip?.color || '#38bdf8' }} />
-            <span style={{ color: activeShip?.color || '#38bdf8' }}>
-              TURNO: JUGADOR {activeShip?.id || 1}{activeShip?.isAI ? ' [IA]' : ' [HUMANO]'}
-            </span>
-          </div>
+      {/* 1. BARRA SUPERIOR FIJA ULTRA-COMPACTA (45px de alto) */}
+      <header
+        className="h-[40px] max-h-[40px] min-h-[40px] w-full px-2.5 flex items-center justify-between bg-black/90 backdrop-blur-sm border-b border-cyan-900/60 shadow-md z-20 shrink-0 font-mono text-[11px] select-none"
+        style={{
+          height: '40px',
+          maxHeight: '40px',
+          minHeight: '40px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '0 10px',
+          fontFamily: 'monospace',
+          fontSize: '11px'
+        }}
+      >
+        {/* Lado Izquierdo: Píldora de Turno activa [ P1 • AZUL ] */}
+        <div
+          className="flex items-center gap-1.5 px-2 py-0.5 rounded-full border bg-slate-950 font-black shrink-0 shadow-sm"
+          style={{
+            borderColor: activeShip?.color || '#38bdf8',
+            color: activeShip?.color || '#38bdf8'
+          }}
+        >
+          <span
+            className="w-2 h-2 rounded-full animate-ping"
+            style={{ backgroundColor: activeShip?.color || '#38bdf8' }}
+          />
+          <span className="tracking-wide uppercase text-[10px] sm:text-[11px]">
+            {activeShip?.id === 1 ? 'P1 • AZUL' : activeShip?.id === 2 ? 'P2 • ROJO' : 'P3 • ÁMBAR'}
+            {activeShip?.isAI ? ' [IA]' : ''}
+          </span>
         </div>
 
-        {/* Telemetría activa: Blindaje, Escudo, Combustible y Créditos */}
-        <div className="flex items-center gap-2 sm:gap-3.5 text-[10px] sm:text-xs font-bold">
-          <div className="flex items-center gap-1 text-emerald-400">
-            <span className="text-slate-400 hidden sm:inline">BLINDAJE:</span>
-            <span>{activeShip?.hp ?? 0}</span>
-          </div>
-          <div className="flex items-center gap-1 text-cyan-400">
-            <span className="text-slate-400 hidden sm:inline">ESCUDO:</span>
-            <span>{activeShip?.shield ?? 0}</span>
-          </div>
-          <div className="flex items-center gap-1 text-sky-400">
-            <span className="text-slate-400 hidden sm:inline">COMBUSTIBLE:</span>
-            <span>{activeShip?.fuel ?? 0}%</span>
-          </div>
-          <div className="flex items-center gap-1 text-amber-400 font-black bg-amber-950/60 px-2 py-0.5 rounded border border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.25)]">
-            <Coins className="w-3 h-3 text-amber-400" />
-            <span>CRÉDITOS: {activeShip?.credits ?? 0} CR</span>
-          </div>
+        {/* Centro: Datos vitales en fila ordenada sin amontonar: HP:1000  ESC:500  COM:100%  300 CR */}
+        <div className="flex items-center gap-2 sm:gap-3.5 font-bold text-[10px] sm:text-[11px] shrink-0">
+          <span className="text-emerald-400">HP:{activeShip?.hp ?? 0}</span>
+          <span className="text-cyan-400">ESC:{activeShip?.shield ?? 0}</span>
+          <span className="text-sky-400">COM:{activeShip?.fuel ?? 0}%</span>
+          <span className="text-amber-400 font-black">{activeShip?.credits ?? 0} CR</span>
         </div>
 
-        {/* SYSTEM ACTIONS */}
-        <div className="flex items-center gap-1 sm:gap-1.5">
-          {/* MOBILE LANDSCAPE LAYOUT TOGGLE */}
-          {!isPortrait && isMobile && (
-            <button
-              onClick={() => {
-                setMobileLandscapeLayout(prev => prev === 'dock' ? 'overlay' : 'dock');
-                triggerHaptic(15);
-              }}
-              className="flex items-center gap-1 px-2 py-1 text-xs rounded border border-cyan-800 bg-slate-900 text-cyan-300 hover:border-cyan-500"
-              title="Alternar entre Barra Inferior y Mandos Flotantes para Móvil"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{mobileLandscapeLayout === 'dock' ? 'MANDOS FLOTANTES' : 'BARRA DOCK'}</span>
-            </button>
-          )}
-
-          {/* FULLSCREEN TOGGLE */}
-          <button
-            onClick={toggleFullscreen}
-            className="p-1.5 text-slate-400 hover:text-cyan-300 bg-slate-900 border border-slate-800 rounded transition-colors"
-            title={isFullscreen ? 'Salir de Pantalla Completa' : 'Pantalla Completa Móvil'}
-          >
-            {isFullscreen ? <Minimize className="w-4 h-4 text-cyan-400" /> : <Maximize className="w-4 h-4" />}
-          </button>
-
-          {/* HANGAR & MODE CONFIG BUTTON */}
-          <button
-            onClick={() => setShowHangarModal(true)}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border border-cyan-800 bg-slate-900 hover:bg-cyan-950/60 hover:border-cyan-500 text-cyan-300 transition-colors"
-            title="Configurar Modo de Juego y Hangar de Naves"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">CONFIGURAR</span>
-          </button>
-
-          {/* ONLINE ROOM */}
-          <button
-            onClick={() => setShowRoomModal(true)}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border border-cyan-800 bg-slate-900 hover:bg-cyan-950/60 hover:border-cyan-500 text-cyan-300 transition-colors"
-            title="Multijugador Online con QR"
-          >
-            <Wifi className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">{isOnlineMode ? `SALA ${roomCode}` : 'SALA QR'}</span>
-          </button>
-
-          {/* SOUND TOGGLE */}
+        {/* Lado Derecho: Grupo compacto de botones de utilidad con tamaño uniforme (30x30px) */}
+        <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => {
               const muted = sound.toggleMute();
               setIsMuted(muted);
             }}
-            className="p-1.5 text-slate-400 hover:text-cyan-400 bg-slate-900 border border-slate-800 rounded transition-colors"
+            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-slate-300 hover:text-cyan-400 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
             title={isMuted ? 'Activar Sonido' : 'Silenciar'}
           >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-cyan-400" />}
+            {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-cyan-400" />}
           </button>
-
-          {/* NUEVO MAPA */}
           <button
             onClick={() => handleRestart()}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border border-amber-800/80 bg-slate-900 hover:bg-amber-950/60 hover:border-amber-500 text-amber-300 transition-colors"
-            title="Generar un nuevo sistema estelar aleatorio"
+            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-amber-400 hover:text-amber-300 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
+            title="Reiniciar / Nuevo Sistema Estelar"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">NUEVO MAPA</span>
+          </button>
+          <button
+            onClick={() => setShowHangarModal(true)}
+            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-cyan-400 hover:text-cyan-300 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
+            title="Ajustes / Hangar"
+          >
+            <Settings className="w-3.5 h-3.5" />
           </button>
         </div>
       </header>
 
-      {/* 100% FIXED TACTICAL VIEWPORT (720x1280 internal portrait resolution, object-fit: contain) */}
-      <div className="relative flex-1 min-h-0 w-full bg-black flex items-center justify-center overflow-hidden p-0.5 sm:p-1 select-none touch-none">
+      {/* 2. ZONA CENTRAL DE BATALLA ORBITAL (Canvas Flexible 100% Ancho y Alto, Cero Franjas Negras) */}
+      <div className="relative flex-1 min-h-0 w-full bg-black overflow-hidden select-none touch-none">
         <canvas
           ref={canvasRef}
-          width={VIEW_WIDTH}
-          height={VIEW_HEIGHT}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={handleCanvasPointerUp}
           onPointerCancel={handleCanvasPointerUp}
-          className="h-full max-h-full aspect-[9/16] object-contain shadow-2xl block touch-none cursor-crosshair"
-          style={{ imageRendering: 'auto' }}
+          className="w-full h-full block touch-none cursor-crosshair"
+          style={{ width: '100%', height: '100%', display: 'block' }}
         />
 
         {/* Dynamic Ballistic Targeting Vector from Ship to Touch */}
@@ -909,131 +915,26 @@ export default function App() {
 
         {/* Floating Coin Pickup Notification */}
         {coinNotification && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 pointer-events-none font-mono text-xs sm:text-sm font-black text-amber-300 bg-amber-950/80 border border-amber-400 px-3 py-1 rounded-full shadow-[0_0_15px_rgba(251,191,36,0.6)] animate-bounce flex items-center gap-1.5 z-20">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none font-mono text-xs sm:text-sm font-black text-amber-300 bg-amber-950/90 border border-amber-400 px-3 py-1 rounded-full shadow-[0_0_15px_rgba(251,191,36,0.6)] animate-bounce flex items-center gap-1.5 z-20">
             <Coins className="w-4 h-4 text-amber-400" />
             <span>{coinNotification.text}</span>
           </div>
         )}
-
-        {/* Telemetry Corner Readout */}
-        <div className="absolute top-2 left-2 pointer-events-none font-mono text-[9px] sm:text-[11px] text-cyan-500/80 bg-black/60 backdrop-blur-sm border border-cyan-900/60 p-1.5 sm:p-2 rounded shadow">
-          <div>SISTEMA: #{engineRef.current?.currentSeed || '1001'} [{engineRef.current?.planets.length || 0} CUERPOS]</div>
-          <div>MODO: {gameConfig.mode.toUpperCase()} ({ships.length} NAVES)</div>
-          <div className="hidden xs:block">CÁMARA: FIJA 100% INMUTABLE</div>
-          {isSimulating && <div className="text-amber-400 animate-pulse font-bold">BALÍSTICA EN CURSO...</div>}
-        </div>
-
-        {/* FLOATING THUMB CONTROLS OVERLAY FOR MOBILE LANDSCAPE MODE */}
-        {!isPortrait && isMobile && mobileLandscapeLayout === 'overlay' && (
-          <div className="absolute inset-0 pointer-events-none z-20 flex justify-between p-2">
-            {/* Left Thumb Bay: Compact Angle & Power */}
-            <div className="pointer-events-auto flex flex-col justify-end gap-1.5 bg-slate-950/85 backdrop-blur-sm border border-cyan-900/80 p-2 rounded-xl max-w-[170px] shadow-2xl">
-              <div className="flex items-center justify-between text-[10px] font-mono text-cyan-300 font-bold">
-                <span>ÁNGULO:</span>
-                <span className="text-sm font-black text-cyan-400">{activeShip?.aimAngle.toFixed(1)}°</span>
-              </div>
-              <div className="flex items-center gap-1 font-mono">
-                <button
-                  onClick={() => adjustAngle(5)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 py-1.5 bg-slate-900 active:bg-cyan-800 border border-slate-700 text-xs font-bold text-slate-200 rounded disabled:opacity-40"
-                >
-                  +5°
-                </button>
-                <button
-                  onClick={() => adjustAngle(1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 py-1.5 bg-slate-900 active:bg-cyan-800 border border-slate-700 text-xs font-bold text-slate-200 rounded disabled:opacity-40"
-                >
-                  +1°
-                </button>
-                <button
-                  onClick={() => adjustAngle(-1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 py-1.5 bg-slate-900 active:bg-cyan-800 border border-slate-700 text-xs font-bold text-slate-200 rounded disabled:opacity-40"
-                >
-                  -1°
-                </button>
-                <button
-                  onClick={() => adjustAngle(-5)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 py-1.5 bg-slate-900 active:bg-cyan-800 border border-slate-700 text-xs font-bold text-slate-200 rounded disabled:opacity-40"
-                >
-                  -5°
-                </button>
-              </div>
-              <div className="flex items-center gap-1 font-mono mt-1">
-                <span className="text-[10px] text-amber-400 font-bold">POT: {activeShip?.power}%</span>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  value={activeShip?.power || 50}
-                  onChange={(e) => adjustPower(Number(e.target.value))}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="w-full accent-amber-500 h-2 bg-slate-800 rounded cursor-pointer"
-                />
-              </div>
-            </div>
-
-            {/* Right Thumb Bay: Launch, Jump & Active Weapon */}
-            <div className="pointer-events-auto flex flex-col justify-end gap-1.5 bg-slate-950/85 backdrop-blur-sm border border-cyan-900/80 p-2 rounded-xl shadow-2xl max-w-[200px]">
-              <button
-                onClick={() => setShowWeaponMatrix(true)}
-                disabled={isSimulating || activeShip?.isAI}
-                className="flex items-center justify-between px-2 py-1.5 bg-slate-900 border border-cyan-700 rounded text-left font-mono"
-              >
-                <div className="flex items-center gap-1.5 truncate">
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: activeWeapon.color }} />
-                  <span className="text-xs font-bold text-slate-100 truncate">{activeWeapon.name}</span>
-                </div>
-                <span className="text-[10px] text-amber-400 shrink-0 font-bold ml-1">
-                  {activeWeapon.price === 0 ? '0 CR' : `${activeWeapon.price} CR`}
-                </span>
-              </button>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={handleHyperJump}
-                  disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
-                  className={`flex-1 py-2.5 font-mono text-xs font-bold uppercase rounded border transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600'
-                      : 'bg-gradient-to-b from-amber-600 to-amber-900 border-amber-400 text-white shadow-lg'
-                  }`}
-                >
-                  SALTO ORBITAL
-                </button>
-
-                <button
-                  onClick={handleFire}
-                  disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
-                  className={`flex-[1.4] py-2.5 font-mono text-xs font-black tracking-wider uppercase rounded-lg border shadow-xl transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600'
-                      : 'bg-gradient-to-r from-rose-600 to-red-700 border-rose-400 text-white shadow-[0_0_15px_rgba(244,63,94,0.6)]'
-                  }`}
-                >
-                  {isSimulating ? 'EN VUELO' : 'DISPARAR'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* 1. DESKTOP RETRO MILITARY HUD DASHBOARD (hidden) */}
-      {false && (
-      <footer className="hidden md:block w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t-2 border-cyan-900/80 p-2 sm:p-3 shadow-2xl z-20 shrink-0">
-        <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-2 sm:gap-4 items-center">
-
-          {/* 1. TACTICAL 360-DEGREE ANGLE DIAL */}
-          <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-800 p-2 rounded-lg shadow-inner">
-            <div className="relative w-18 h-18 sm:w-20 sm:h-20 shrink-0">
+      {/* 3. CONSOLA TÁCTICA INFERIOR FIJA (Altura aprox. 200px, Ergonomía de Pulgares) */}
+      <footer className="w-full bg-slate-950/95 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none h-[115px] sm:h-[120px] max-h-[125px]">
+        <div className="flex items-center justify-between gap-1.5 h-full max-w-xl mx-auto">
+          {/* 1. BLOQUE IZQUIERDO (Apuntado): Mini-dial 50px + Ángulo digital + botones finos [-] [+] */}
+          <div className="flex flex-col items-center justify-center p-1 bg-slate-900/80 rounded-lg border border-slate-800 w-[85px] sm:w-[95px] shrink-0 h-full">
+            <div className="text-[10px] sm:text-[11px] font-black text-cyan-300 tabular-nums leading-none mb-0.5">
+              {Math.round(activeShip?.aimAngle ?? 0)}°
+            </div>
+            <div className="relative w-[46px] h-[46px] shrink-0 touch-none my-0.5">
               <svg
-                ref={dialRef}
+                ref={mobileDialRef}
                 viewBox="-50 -50 100 100"
-                className="w-full h-full cursor-pointer select-none touch-none"
+                className="w-full h-full cursor-pointer select-none touch-none drop-shadow-[0_0_6px_rgba(56,189,248,0.3)]"
                 onPointerDown={handleDialPointerDown}
                 onPointerMove={handleDialPointerMove}
                 onPointerUp={handleDialPointerUp}
@@ -1044,62 +945,40 @@ export default function App() {
                 <line x1="44" y1="0" x2="38" y2="0" stroke="#38bdf8" strokeWidth="2" />
                 <line x1="0" y1="44" x2="0" y2="38" stroke="#38bdf8" strokeWidth="2" />
                 <line x1="-44" y1="0" x2="-38" y2="0" stroke="#38bdf8" strokeWidth="2" />
-
                 {activeShip && (
                   <g transform={`rotate(${-activeShip.aimAngle})`}>
-                    <line x1="0" y1="0" x2="36" y2="0" stroke="#f43f5e" strokeWidth="2.5" strokeLinecap="round" />
-                    <circle cx="36" cy="0" r="3" fill="#f43f5e" />
+                    <line x1="0" y1="0" x2="36" y2="0" stroke="#f43f5e" strokeWidth="3" strokeLinecap="round" />
+                    <circle cx="36" cy="0" r="3.5" fill="#f43f5e" />
                   </g>
                 )}
                 <circle cx="0" cy="0" r="5" fill="#38bdf8" />
               </svg>
             </div>
-
-            <div className="flex flex-col gap-1 flex-1 font-mono">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-400 uppercase tracking-wider">ÁNGULO DE TIRO</span>
-                <span className="text-sm font-bold text-cyan-400 tabular-nums">
-                  {activeShip?.aimAngle.toFixed(1)}°
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => adjustAngle(-1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 h-12 flex items-center justify-center bg-slate-900 hover:bg-slate-800 border-2 border-slate-700 active:bg-cyan-900 text-lg font-black text-cyan-300 rounded-lg transition-colors disabled:opacity-40 cursor-pointer shadow"
-                  title="Reducir 1 grado [-]"
-                >
-                  [-]
-                </button>
-                <button
-                  onClick={() => adjustAngle(1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="flex-1 h-12 flex items-center justify-center bg-slate-900 hover:bg-slate-800 border-2 border-slate-700 active:bg-cyan-900 text-lg font-black text-cyan-300 rounded-lg transition-colors disabled:opacity-40 cursor-pointer shadow"
-                  title="Aumentar 1 grado [+]"
-                >
-                  [+]
-                </button>
-              </div>
+            <div className="flex items-center gap-1 w-full mt-0.5">
+              <button
+                onClick={() => adjustAngle(-1)}
+                disabled={isSimulating || activeShip?.isAI}
+                className="flex-1 h-5 flex items-center justify-center bg-slate-800 active:bg-cyan-800 border border-slate-700 text-[10px] font-black text-cyan-300 rounded shadow disabled:opacity-40 cursor-pointer"
+                title="Reducir ángulo [-]"
+              >
+                -1°
+              </button>
+              <button
+                onClick={() => adjustAngle(1)}
+                disabled={isSimulating || activeShip?.isAI}
+                className="flex-1 h-5 flex items-center justify-center bg-slate-800 active:bg-cyan-800 border border-slate-700 text-[10px] font-black text-cyan-300 rounded shadow disabled:opacity-40 cursor-pointer"
+                title="Aumentar ángulo [+]"
+              >
+                +1°
+              </button>
             </div>
           </div>
 
-          {/* 2. PROPULSION POWER GAUGE */}
-          <div className="flex flex-col gap-1.5 bg-slate-950/80 border border-slate-800 p-2 rounded-lg font-mono">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-slate-400 uppercase tracking-wider">IMPULSO PROPELENTE</span>
-              <span className="text-sm font-bold text-amber-400 tabular-nums">
-                {activeShip?.power}%
-              </span>
-            </div>
-
-            <div className="relative w-full h-4 bg-slate-900 border border-slate-700 rounded overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500 transition-all duration-75"
-                style={{ width: `${activeShip?.power || 50}%` }}
-              />
-            </div>
-
-            <div className="flex items-center gap-1">
+          {/* 2. BLOQUE CENTRAL (Potencia y Menús Desplegables ARMA & ESCUDO) */}
+          <div className="flex-1 flex flex-col justify-between py-0.5 px-1.5 bg-slate-900/80 rounded-lg border border-slate-800 h-full min-w-0">
+            {/* Barra de Potencia Compacta */}
+            <div className="flex items-center gap-1.5 w-full">
+              <span className="text-[9px] text-amber-400 font-bold shrink-0">POT:</span>
               <input
                 type="range"
                 min="10"
@@ -1107,414 +986,165 @@ export default function App() {
                 value={activeShip?.power || 50}
                 onChange={(e) => adjustPower(Number(e.target.value))}
                 disabled={isSimulating || activeShip?.isAI}
-                className="w-full accent-amber-500 h-1.5 bg-slate-800 rounded cursor-pointer disabled:opacity-40"
+                className="w-full accent-amber-500 h-2 bg-slate-800 rounded cursor-pointer disabled:opacity-40"
               />
-            </div>
-          </div>
-
-          {/* 3. TACTICAL WEAPON MATRIX WITH PRICES & BALANCE */}
-          <div className="flex flex-col gap-1 bg-slate-950/80 border border-slate-800 p-2 rounded-lg font-mono">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-slate-400 uppercase tracking-wider">OJIVA ACTIVA</span>
-              <span className="text-[11px] font-bold text-amber-400">
-                {activeWeapon.price === 0 ? 'GRATIS (0 CR)' : `${activeWeapon.price} CR`}
+              <span className="text-[10px] font-black text-amber-400 tabular-nums shrink-0">
+                {activeShip?.power}%
               </span>
             </div>
 
+            {/* Desplegable ARMA */}
             <button
               onClick={() => setShowWeaponMatrix(true)}
               disabled={isSimulating || activeShip?.isAI}
-              className="flex items-center justify-between w-full px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-cyan-800/80 hover:border-cyan-500 rounded-lg text-left transition-colors group disabled:opacity-40 cursor-pointer"
+              className="w-full h-7 px-2 flex items-center justify-between bg-slate-950/90 hover:bg-slate-900 border border-cyan-700/70 rounded text-[10px] text-slate-200 cursor-pointer transition-colors disabled:opacity-40 truncate"
+              title="Seleccionar Arma del Arsenal (20 Armas)"
             >
-              <div className="flex items-center gap-2 truncate">
-                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: activeWeapon.color }} />
-                <span className="text-xs font-semibold text-slate-100 truncate group-hover:text-cyan-300">
-                  {activeWeapon.name}
-                </span>
+              <div className="flex items-center gap-1.5 truncate">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: activeWeapon.color }} />
+                <span className="text-cyan-300 font-bold">🚀 ARMA:</span>
+                <span className="truncate text-slate-100">{activeWeapon.name}</span>
               </div>
-              <span className="text-[10px] text-cyan-300 font-bold uppercase px-2 py-0.5 bg-cyan-950/80 border border-cyan-700/60 rounded shrink-0">
-                [ SELECCIONAR ARMA ]
-              </span>
+              <div className="flex items-center gap-1 shrink-0 ml-1 text-amber-400 font-bold text-[9px]">
+                <span>{activeWeapon.price === 0 ? 'GRATIS' : `${activeWeapon.price} CR`}</span>
+                <span className="text-slate-500 text-[8px]">▼</span>
+              </div>
             </button>
 
-            <div className="flex items-center justify-between text-[10px] text-slate-400">
-              <span>DAÑO: {activeWeapon.damage} HP</span>
-              <span>CRÁTER: {activeWeapon.craterRadius}px</span>
-            </div>
+            {/* Desplegable ESCUDO */}
+            <button
+              onClick={() => setShowShieldMatrix(true)}
+              disabled={isSimulating || activeShip?.isAI}
+              className="w-full h-7 px-2 flex items-center justify-between bg-slate-950/90 hover:bg-slate-900 border border-indigo-700/70 rounded text-[10px] text-slate-200 cursor-pointer transition-colors disabled:opacity-40 truncate"
+              title="Seleccionar Escudo Activo (8 Escudos)"
+            >
+              <div className="flex items-center gap-1.5 truncate">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: activeShield.color }} />
+                <span className="text-indigo-300 font-bold">🛡️ ESCUDO:</span>
+                <span className="truncate text-slate-100">{activeShield.name}</span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0 ml-1 text-amber-400 font-bold text-[9px]">
+                <span>{activeShield.price === 0 ? 'GRATIS' : `${activeShield.price} CR`}</span>
+                <span className="text-slate-500 text-[8px]">▼</span>
+              </div>
+            </button>
           </div>
 
-          {/* 4. ACTIONS & SHIP STATUS */}
-          <div className="flex items-center gap-2">
-            {/* Ship Status: Hull, Shield & Credits */}
-            <div className="flex flex-col gap-1 flex-1 font-mono text-[10px]">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">BLINDAJE:</span>
-                <span className="font-bold text-emerald-400">{activeShip?.hp || 0} / {activeShip?.maxHp || 1000} HP</span>
-              </div>
-              <div className="w-full h-1 bg-slate-900 rounded overflow-hidden border border-slate-800">
-                <div
-                  className="h-full bg-emerald-500"
-                  style={{ width: `${Math.min(100, ((activeShip?.hp || 0) / (activeShip?.maxHp || 1000)) * 100)}%` }}
-                />
-              </div>
+          {/* 3. BLOQUE DERECHO (Acción Rápida: Salto & Disparar) */}
+          <div className="flex flex-col justify-between gap-1 p-0.5 w-[85px] sm:w-[95px] shrink-0 h-full">
+            <button
+              onClick={handleHyperJump}
+              disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion'}
+              className={`w-full flex-1 flex items-center justify-center gap-1 font-mono text-[10px] font-black uppercase rounded-lg border transition-all active:scale-95 ${
+                isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion'
+                  ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 border-amber-400 text-white shadow-[0_0_10px_rgba(245,158,11,0.4)] cursor-pointer'
+              }`}
+              title="Salto Orbital a otro planeta (Gasta 25% Combustible)"
+            >
+              <Zap className="w-3 h-3 text-amber-300 shrink-0" />
+              <span>SALTO</span>
+            </button>
 
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">ESCUDO DEFLECTOR:</span>
-                <span className="font-bold text-cyan-400">{activeShip?.shield || 0} / 500 SP</span>
-              </div>
-              <div className="w-full h-1 bg-slate-900 rounded overflow-hidden border border-slate-800">
-                <div
-                  className="h-full bg-cyan-500"
-                  style={{ width: `${Math.min(100, ((activeShip?.shield || 0) / 500) * 100)}%` }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">FONDOS:</span>
-                <span className="font-bold text-amber-400">{activeShip?.credits || 0} CR</span>
-              </div>
-              <div className="w-full h-1 bg-slate-900 rounded overflow-hidden border border-slate-800">
-                <div
-                  className="h-full bg-amber-500"
-                  style={{ width: `${Math.min(100, ((activeShip?.credits || 0) / 600) * 100)}%` }}
-                />
-              </div>
-            </div>
-
-            {/* BUTTONS: HYPER-JUMP & FIRE */}
-            <div className="flex flex-col sm:flex-row gap-1.5 shrink-0">
-              <button
-                onClick={handleHyperJump}
-                disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
-                className={`relative px-4 h-12 font-mono text-xs font-bold tracking-wider uppercase rounded-xl border transition-all active:scale-95 flex items-center justify-center ${
-                  isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
-                    ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                    : 'bg-gradient-to-b from-amber-600 via-amber-700 to-amber-900 border-amber-400 text-white shadow-[0_0_14px_rgba(245,158,11,0.35)] hover:shadow-[0_0_20px_rgba(245,158,11,0.6)] cursor-pointer'
-                }`}
-                title="Salto Orbital balístico hacia otro planeta (-30 Fuel) [Tecla J]"
-              >
-                <div className="flex items-center gap-1.5">
-                  <Zap className="w-4 h-4 text-amber-300" />
-                  <span>SALTO ORBITAL</span>
-                </div>
-              </button>
-
-              <button
-                onClick={handleFire}
-                disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
-                className={`relative px-5 h-12 font-mono text-xs font-black tracking-wider uppercase rounded-xl border shadow-xl transition-all active:scale-95 flex items-center justify-center ${
-                  isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                    ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                    : 'bg-gradient-to-b from-rose-600 via-rose-700 to-rose-900 border-rose-400 text-white shadow-[0_0_20px_rgba(244,63,94,0.4)] hover:shadow-[0_0_26px_rgba(244,63,94,0.7)] cursor-pointer'
-                }`}
-                title={`Disparar arma (${activeWeapon.price === 0 ? 'Gratis' : `${activeWeapon.price} CR`}) [Espacio]`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Target className="w-4 h-4 animate-spin-slow" />
-                  <span>{isSimulating ? 'EN VUELO' : 'DISPARAR'}</span>
-                </div>
-              </button>
-            </div>
+            <button
+              onClick={handleFire}
+              disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
+              className={`w-full flex-[1.4] flex items-center justify-center gap-1 font-mono text-xs font-black tracking-wide uppercase rounded-lg border-2 shadow-2xl transition-all active:scale-95 ${
+                isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
+                  ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-600 border-rose-400 text-white shadow-[0_0_14px_rgba(244,63,94,0.6)] cursor-pointer animate-pulse'
+              }`}
+              title="Disparar arma seleccionada"
+            >
+              <Target className="w-3.5 h-3.5 shrink-0" />
+              <span>{isSimulating ? 'VUELO' : 'DISPARAR'}</span>
+            </button>
           </div>
         </div>
       </footer>
-      )}
 
-      {/* 2. CONSOLA TÁCTICA INFERIOR FIJA (PORTRAIT FIRST) */}
-      {true ? (
-        <footer className="w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t-2 border-cyan-900/80 p-2 shadow-2xl z-20 shrink-0 font-mono select-none">
-          <div className="flex flex-col gap-2 max-w-md mx-auto">
-            {/* Status Strip: Active Player, HP, SP, Fuel & CR */}
-            <div className="flex items-center justify-between px-2 py-1 bg-slate-950/90 border border-slate-800 rounded-lg text-[10px]">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: activeShip?.color }} />
-                <span className="font-bold text-white uppercase">TURNO P{activeShip?.id}</span>
-                <span className="text-emerald-400 font-bold">{activeShip?.hp} HP</span>
-                <span className="text-cyan-300 font-bold">{activeShip?.shield} SP</span>
-              </div>
+
+      {/* MODAL MATRIZ DE ESCUDOS (8 ESCUDOS CANÓNICOS) */}
+      {showShieldMatrix && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 z-50">
+          <div className="bg-slate-950 border-2 border-indigo-800 rounded-xl max-w-2xl w-full max-h-[90dvh] flex flex-col shadow-[0_0_40px_rgba(99,102,241,0.25)] font-mono">
+            <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 border-b border-indigo-900 bg-slate-900/80">
               <div className="flex items-center gap-2">
-                <span className="text-sky-400 font-bold">{activeShip?.fuel}% F</span>
-                <span className="text-amber-400 font-black">{activeShip?.credits} CR</span>
+                <Shield className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-xs sm:text-sm font-bold tracking-wider text-indigo-300 uppercase truncate">
+                  SISTEMA DE ESCUDOS DEFLECTORES (8 ESCUDOS)
+                </h2>
               </div>
-            </div>
-
-            {/* Main Tactical Deck: 3 Ergonomic Sections for Portrait Thumbs */}
-            <div className="grid grid-cols-3 gap-1.5 sm:gap-2 bg-slate-950/95 border border-slate-800/80 p-2 rounded-xl shadow-inner">
-              {/* LADO IZQUIERDO: Dial Táctil 360° Circular + Botones [-] / [+] de mínimo 48px */}
-              <div className="flex flex-col items-center justify-between p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <div className="flex items-center justify-between w-full px-1 text-[9px] sm:text-[10px]">
-                  <span className="text-slate-400 uppercase font-bold">ÁNGULO</span>
-                  <span className="text-xs sm:text-sm font-black text-cyan-400 tabular-nums">
-                    {activeShip?.aimAngle.toFixed(1)}°
-                  </span>
+              <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+                <div className="flex items-center gap-1 text-[11px] sm:text-xs text-amber-400 font-bold bg-amber-950/60 px-2 sm:px-2.5 py-1 rounded border border-amber-600/60">
+                  <Coins className="w-3.5 h-3.5" />
+                  <span>{activeShip?.credits || 0} CR</span>
                 </div>
-
-                {/* Rotary Dial */}
-                <div className="relative w-16 h-16 sm:w-20 sm:h-20 shrink-0 my-1 touch-none">
-                  <svg
-                    ref={mobileDialRef}
-                    viewBox="-50 -50 100 100"
-                    className="w-full h-full cursor-pointer select-none touch-none drop-shadow-[0_0_8px_rgba(56,189,248,0.25)]"
-                    onPointerDown={handleDialPointerDown}
-                    onPointerMove={handleDialPointerMove}
-                    onPointerUp={handleDialPointerUp}
-                  >
-                    <circle cx="0" cy="0" r="46" fill="#090d16" stroke="#1e293b" strokeWidth="3" />
-                    <circle cx="0" cy="0" r="42" fill="none" stroke="#334155" strokeWidth="1" strokeDasharray="2,4" />
-                    <line x1="0" y1="-44" x2="0" y2="-38" stroke="#38bdf8" strokeWidth="2" />
-                    <line x1="44" y1="0" x2="38" y2="0" stroke="#38bdf8" strokeWidth="2" />
-                    <line x1="0" y1="44" x2="0" y2="38" stroke="#38bdf8" strokeWidth="2" />
-                    <line x1="-44" y1="0" x2="-38" y2="0" stroke="#38bdf8" strokeWidth="2" />
-
-                    {activeShip && (
-                      <g transform={`rotate(${-activeShip.aimAngle})`}>
-                        <line x1="0" y1="0" x2="36" y2="0" stroke="#f43f5e" strokeWidth="3" strokeLinecap="round" />
-                        <circle cx="36" cy="0" r="3.5" fill="#f43f5e" />
-                      </g>
-                    )}
-                    <circle cx="0" cy="0" r="6" fill="#38bdf8" />
-                  </svg>
-                </div>
-
-                {/* Angle Precision Stepper Buttons (Min 48px Height) */}
-                <div className="flex items-center gap-1 w-full">
-                  <button
-                    onClick={() => adjustAngle(-1)}
-                    disabled={isSimulating || activeShip?.isAI}
-                    className="flex-1 min-h-[48px] h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-base sm:text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40 cursor-pointer"
-                    title="Disminuir 1 grado [-]"
-                  >
-                    [-]
-                  </button>
-                  <button
-                    onClick={() => adjustAngle(1)}
-                    disabled={isSimulating || activeShip?.isAI}
-                    className="flex-1 min-h-[48px] h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-base sm:text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40 cursor-pointer"
-                    title="Aumentar 1 grado [+]"
-                  >
-                    [+]
-                  </button>
-                </div>
-              </div>
-
-              {/* CENTRO: Barra Táctil de Potencia (0-100%) + Botón Desplegable Grande [ ARSENAL ] */}
-              <div className="flex flex-col justify-between p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <div className="flex items-center justify-between text-[9px] sm:text-[10px]">
-                  <span className="text-slate-400 uppercase font-bold">POTENCIA</span>
-                  <span className="text-xs sm:text-sm font-black text-amber-400 tabular-nums">
-                    {activeShip?.power}%
-                  </span>
-                </div>
-
-                {/* Power Slider */}
-                <div className="flex flex-col gap-1 my-auto">
-                  <input
-                    type="range"
-                    min="10"
-                    max="100"
-                    value={activeShip?.power || 50}
-                    onChange={(e) => adjustPower(Number(e.target.value))}
-                    disabled={isSimulating || activeShip?.isAI}
-                    className="w-full accent-amber-500 h-2.5 bg-slate-800 rounded cursor-pointer disabled:opacity-40"
-                  />
-                  <div className="flex justify-between text-[8px] text-slate-500 font-bold px-0.5">
-                    <span>10%</span>
-                    <span>50%</span>
-                    <span>100%</span>
-                  </div>
-                </div>
-
-                {/* Botón Desplegable Grande [ ARSENAL ] */}
                 <button
-                  onClick={() => setShowWeaponMatrix(true)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="w-full min-h-[48px] h-12 flex flex-col items-center justify-center bg-gradient-to-r from-sky-950 to-cyan-950 hover:from-sky-900 hover:to-cyan-900 border-2 border-cyan-600 rounded-lg text-cyan-300 font-bold shadow-[0_0_10px_rgba(6,182,212,0.3)] active:scale-95 transition-all cursor-pointer disabled:opacity-40 px-1"
+                  onClick={() => setShowShieldMatrix(false)}
+                  className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 cursor-pointer"
                 >
-                  <div className="flex items-center gap-1 text-[10px] sm:text-xs uppercase tracking-wider">
-                    <Sparkles className="w-3 h-3 text-cyan-400 animate-spin-slow shrink-0" />
-                    <span>[ ARSENAL ]</span>
-                  </div>
-                  <span className="text-[8px] sm:text-[9px] text-slate-300 truncate max-w-[95px]">
-                    {activeWeapon.name}
-                  </span>
-                </button>
-              </div>
-
-              {/* LADO DERECHO: Botón Rojo Retro "DISPARAR" + Botón Ámbar "SALTO ORBITAL" */}
-              <div className="flex flex-col justify-between gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                {/* SALTO ORBITAL */}
-                <button
-                  onClick={handleHyperJump}
-                  disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
-                  className={`flex items-center justify-center gap-1 min-h-[48px] h-12 font-mono text-xs font-black uppercase rounded-lg border-2 transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 border-amber-400 text-white shadow-[0_0_12px_rgba(245,158,11,0.5)] cursor-pointer'
-                  }`}
-                >
-                  <Zap className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                  <span>SALTO</span>
-                </button>
-
-                {/* DISPARAR */}
-                <button
-                  onClick={handleFire}
-                  disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
-                  className={`flex items-center justify-center gap-1 min-h-[48px] h-12 font-mono text-xs sm:text-sm font-black tracking-wider uppercase rounded-lg border-2 shadow-2xl transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 border-rose-400 text-white shadow-[0_0_15px_rgba(244,63,94,0.7)] cursor-pointer'
-                  }`}
-                >
-                  <Target className="w-4 h-4 animate-spin-slow shrink-0" />
-                  <span>{isSimulating ? 'EN VUELO' : 'DISPARAR'}</span>
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* Quick Horizontal Weapon Carousel (Swipeable 20 Weapons) */}
-            <div className="flex flex-col gap-1 bg-slate-950/80 border border-slate-800 p-1.5 rounded-lg">
-              <div className="flex items-center justify-between text-[10px] px-1">
-                <span className="text-slate-400 font-bold uppercase">OJIVA: {activeWeapon.name}</span>
-                <span className="text-amber-400 font-bold">
-                  {activeWeapon.price === 0 ? 'GRATIS (0 CR)' : `${activeWeapon.price} CR`} • DAÑO {activeWeapon.damage} HP
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1.5 overflow-x-auto py-1 px-0.5 select-none scroll-smooth">
-                {WEAPON_CATALOG.map((w) => {
-                  const isSelected = activeShip?.weaponId === w.id;
-                  const canAfford = (activeShip?.credits ?? 0) >= w.price;
-                  return (
-                    <button
-                      key={w.id}
-                      onClick={() => selectWeapon(w.id)}
-                      disabled={!canAfford || isSimulating || activeShip?.isAI}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded border text-[10px] font-mono shrink-0 transition-all ${
-                        isSelected
-                          ? 'bg-cyan-950/90 border-cyan-400 text-white shadow-[0_0_8px_rgba(56,189,248,0.4)] scale-105'
-                          : canAfford
-                            ? 'bg-slate-900 border-slate-800 text-slate-300 active:bg-slate-800'
-                            : 'bg-slate-950/50 border-slate-900 text-slate-600 opacity-40'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: w.color }} />
-                      <span className="font-bold truncate max-w-[90px]">{w.name}</span>
-                      <span className={`text-[9px] px-1 py-0.2 rounded font-bold ${w.price === 0 ? 'text-emerald-400 bg-emerald-950/50' : 'text-amber-400 bg-amber-950/50'}`}>
-                        {w.price === 0 ? '0' : `${w.price}`}
+            <div className="p-2.5 sm:p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 overflow-y-auto max-h-[65vh]">
+              {SHIELD_CATALOG.map((s) => {
+                const isSelected = activeShip?.shieldType === s.id;
+                const canAfford = (activeShip?.credits ?? 0) >= s.price;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      selectShield(s.id);
+                      setShowShieldMatrix(false);
+                    }}
+                    disabled={!canAfford && !isSelected}
+                    className={`flex flex-col text-left p-2.5 rounded-lg border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-indigo-950/90 border-indigo-400 shadow-[0_0_15px_rgba(99,102,241,0.35)] ring-1 ring-indigo-400'
+                        : canAfford
+                          ? 'bg-slate-900/90 border-slate-800 hover:border-indigo-600 hover:bg-slate-850'
+                          : 'bg-slate-950/60 border-slate-900 opacity-40 cursor-not-allowed'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                        <span className="font-bold text-xs text-white uppercase">{s.name}</span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        s.price === 0
+                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : 'bg-amber-950 text-amber-400 border border-amber-800'
+                      }`}>
+                        {s.price === 0 ? 'GRATIS' : `${s.price} CR`}
                       </span>
-                    </button>
-                  );
-                })}
-                <button
-                  onClick={() => setShowWeaponMatrix(true)}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-600 text-cyan-300 rounded text-[10px] font-mono font-bold shrink-0 shadow cursor-pointer"
-                >
-                  <Sparkles className="w-3 h-3 text-cyan-400" />
-                  <span>[ SELECCIONAR ARMA ]</span>
-                </button>
-              </div>
+                    </div>
+
+                    <p className="text-[10px] text-slate-300 leading-relaxed mb-2">
+                      {s.description}
+                    </p>
+
+                    <div className="mt-auto flex items-center justify-between text-[9px] pt-1.5 border-t border-slate-800/80">
+                      <span className="text-indigo-400 font-medium">{s.effect}</span>
+                      {isSelected ? (
+                        <span className="text-emerald-400 font-bold flex items-center gap-0.5">
+                          ✓ EQUIPADO
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 hover:text-indigo-300 font-bold">
+                          {canAfford ? 'ACTIVAR' : 'SIN FONDOS'}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
-        </footer>
-      ) : (
-        /* 2B. MOBILE LANDSCAPE COMPACT DOCK (When in landscape dock mode) */
-        mobileLandscapeLayout === 'dock' && (
-          <footer className="block md:hidden w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none">
-            <div className="flex items-center justify-between gap-1.5 max-w-3xl mx-auto">
-              {/* Quick Angle Stepper */}
-              <div className="flex items-center gap-1 bg-slate-900/90 border border-slate-800 px-1.5 py-1 rounded">
-                <span className="text-[10px] text-cyan-400 font-bold">ÁNG:</span>
-                <button
-                  onClick={() => adjustAngle(5)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="px-1.5 py-0.5 bg-slate-800 text-[10px] font-bold text-slate-200 rounded"
-                >
-                  +5°
-                </button>
-                <button
-                  onClick={() => adjustAngle(1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="px-1.5 py-0.5 bg-slate-800 text-[10px] font-bold text-slate-200 rounded"
-                >
-                  +1°
-                </button>
-                <span className="text-xs font-black text-cyan-300 tabular-nums px-1">
-                  {activeShip?.aimAngle.toFixed(1)}°
-                </span>
-                <button
-                  onClick={() => adjustAngle(-1)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="px-1.5 py-0.5 bg-slate-800 text-[10px] font-bold text-slate-200 rounded"
-                >
-                  -1°
-                </button>
-                <button
-                  onClick={() => adjustAngle(-5)}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="px-1.5 py-0.5 bg-slate-800 text-[10px] font-bold text-slate-200 rounded"
-                >
-                  -5°
-                </button>
-              </div>
-
-              {/* Power Slider */}
-              <div className="flex items-center gap-1 bg-slate-900/90 border border-slate-800 px-1.5 py-1 rounded">
-                <span className="text-[10px] text-amber-400 font-bold">POT:</span>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  value={activeShip?.power || 50}
-                  onChange={(e) => adjustPower(Number(e.target.value))}
-                  disabled={isSimulating || activeShip?.isAI}
-                  className="w-16 accent-amber-500 h-1.5 bg-slate-800 rounded"
-                />
-                <span className="text-xs font-black text-amber-400 tabular-nums">
-                  {activeShip?.power}%
-                </span>
-              </div>
-
-              {/* Active Weapon button */}
-              <button
-                onClick={() => setShowWeaponMatrix(true)}
-                disabled={isSimulating || activeShip?.isAI}
-                className="flex items-center gap-1.5 px-2 py-1 bg-slate-900 border border-cyan-700/80 rounded max-w-[140px] truncate"
-              >
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: activeWeapon.color }} />
-                <span className="text-[10px] font-bold text-slate-100 truncate">{activeWeapon.name}</span>
-                <span className="text-[9px] text-amber-400 font-bold">{activeWeapon.price} CR</span>
-              </button>
-
-              {/* Action Buttons: Salto & Fuego */}
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  onClick={handleHyperJump}
-                  disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
-                  className={`px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase rounded border transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600'
-                      : 'bg-amber-600 border-amber-400 text-white shadow'
-                  }`}
-                >
-                  SALTO ORBITAL
-                </button>
-
-                <button
-                  onClick={handleFire}
-                  disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
-                  className={`px-3 py-1.5 font-mono text-xs font-black tracking-wider uppercase rounded border shadow-lg transition-all active:scale-95 ${
-                    isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                      ? 'bg-slate-900 border-slate-800 text-slate-600'
-                      : 'bg-gradient-to-r from-rose-600 to-red-600 border-rose-400 text-white shadow-[0_0_10px_rgba(244,63,94,0.5)]'
-                  }`}
-                >
-                  {isSimulating ? 'EN VUELO' : 'DISPARAR'}
-                </button>
-              </div>
-            </div>
-          </footer>
-        )
+        </div>
       )}
 
       {/* WEAPON SELECTION MATRIX MODAL (20 WEAPONS WITH ECONOMY PRICES) */}

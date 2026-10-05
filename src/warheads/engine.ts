@@ -9,13 +9,98 @@ import { generatePlanetCanvas, drawAtmosphereGlow, PlanetType } from './noise';
 import { WeaponDef, WEAPON_CATALOG } from './weapons';
 import { sound } from './audio';
 
-export const VIEW_WIDTH = 720;
-export const VIEW_HEIGHT = 1280;
 export const G_CONSTANT = 2200; // Gravitational constant scale with Plummer softening
 export const PLUMMER_EPSILON_SQ = 625; // Plummer softening epsilon = 25 pixels (25^2 = 625)
 
 export type PlayerId = 1 | 2 | 3;
 export type ShipModel = 'enterprise' | 'falcon' | 'xwing' | 'interceptor' | 'dreadnought' | 'frigate' | 'quantum';
+
+export type ShieldType =
+  | 'deflector'
+  | 'ricochet'
+  | 'absorb'
+  | 'phase'
+  | 'repulsor'
+  | 'reflector'
+  | 'bastion'
+  | 'anti_emp';
+
+export interface ShieldDef {
+  id: ShieldType;
+  name: string;
+  price: number;
+  description: string;
+  effect: string;
+  color: string;
+}
+
+export const SHIELD_CATALOG: ShieldDef[] = [
+  {
+    id: 'deflector',
+    name: 'Deflector Estándar',
+    price: 0,
+    description: 'Absorbe 300 HP de explosiones antes de caer.',
+    effect: 'Absorbe 300 HP de daño',
+    color: '#38bdf8'
+  },
+  {
+    id: 'ricochet',
+    name: 'Rebote / Ricochet',
+    price: 40,
+    description: 'Los proyectiles balísticos y metralla rebotan elásticamente en ángulo opuesto.',
+    effect: 'Rebota proyectiles balísticos',
+    color: '#a855f7'
+  },
+  {
+    id: 'absorb',
+    name: 'Colector / Absorción',
+    price: 60,
+    description: 'Convierte el 60% del daño en recarga de combustible de salto y +30 CR.',
+    effect: '+60% absorción a combustible y créditos',
+    color: '#10b981'
+  },
+  {
+    id: 'phase',
+    name: 'Cuántico de Fase',
+    price: 75,
+    description: 'La nave es semi-incorpórea; proyectiles cinéticos la atraviesan sin daño (vulnerable a PEM y antimateria).',
+    effect: 'Intangibilidad ante proyectiles cinéticos',
+    color: '#818cf8'
+  },
+  {
+    id: 'repulsor',
+    name: 'Gravitatorio Repulsor',
+    price: 90,
+    description: 'Emite una fuerza de repulsión que curva y desvía bombas pesadas antes del impacto.',
+    effect: 'Campo de fuerza de desvío cinético',
+    color: '#22d3ee'
+  },
+  {
+    id: 'reflector',
+    name: 'Espejo Reflector',
+    price: 100,
+    description: 'Refleja armas de taquiones y rayos de energía hacia el atacante.',
+    effect: 'Devuelve proyectiles de energía',
+    color: '#f43f5e'
+  },
+  {
+    id: 'bastion',
+    name: 'Bastión Pesado',
+    price: 120,
+    description: '+800 SP de protección masiva contra ondas de choque, pero anula el salto en ese turno.',
+    effect: '+800 SP contra ondas de choque',
+    color: '#f59e0b'
+  },
+  {
+    id: 'anti_emp',
+    name: 'Aislante Anti-PEM',
+    price: 130,
+    description: 'Inmunidad total contra el drenaje de sistemas y combustible provocado por PEM.',
+    effect: 'Inmunidad total a interferencias PEM',
+    color: '#34d399'
+  }
+];
+
 
 export interface Planet {
   id: number;
@@ -56,6 +141,8 @@ export interface Ship {
   vy: number;
   flightTime: number;
   jumpTrail: { x: number; y: number; alpha: number }[];
+  shieldType: ShieldType;
+  lastHitTime?: number;
 }
 
 export interface Coin {
@@ -159,6 +246,9 @@ export class WarHeadsEngine {
     aiPlayers: {}
   };
 
+  public width: number;
+  public height: number;
+
   public onTurnChange?: (turn: PlayerId) => void;
   public onStateUpdate?: () => void;
   public onGameOver?: (winner: PlayerId | 'draw') => void;
@@ -172,8 +262,10 @@ export class WarHeadsEngine {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.canvas.width = VIEW_WIDTH;
-    this.canvas.height = VIEW_HEIGHT;
+    this.width = canvas.clientWidth || canvas.width || 720;
+    this.height = canvas.clientHeight || canvas.height || 1280;
+    this.canvas.width = this.width;
+    this.canvas.height = this.height;
     this.ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
     this.initStars();
@@ -181,12 +273,48 @@ export class WarHeadsEngine {
     this.startLoop();
   }
 
+  public resize(w: number, h: number) {
+    if (w <= 0 || h <= 0) return;
+    const oldW = this.width;
+    const oldH = this.height;
+    if (Math.abs(oldW - w) < 2 && Math.abs(oldH - h) < 2) return;
+
+    this.width = w;
+    this.height = h;
+    this.canvas.width = w;
+    this.canvas.height = h;
+
+    this.initStars();
+
+    if (oldW > 0 && oldH > 0 && this.planets.length > 0) {
+      const scaleX = w / oldW;
+      const scaleY = h / oldH;
+      for (const pl of this.planets) {
+        pl.x = Math.max(pl.radius + 40, Math.min(w - pl.radius - 40, pl.x * scaleX));
+        pl.y = Math.max(pl.radius + 40, Math.min(h - pl.radius - 40, pl.y * scaleY));
+      }
+      for (const sh of this.ships) {
+        if (!sh.isAirborne) {
+          const pl = this.planets.find(p => p.id === sh.planetId);
+          if (pl) {
+            sh.x = pl.x + Math.cos(sh.surfaceAngle) * (pl.radius + 10);
+            sh.y = pl.y + Math.sin(sh.surfaceAngle) * (pl.radius + 10);
+          }
+        } else {
+          sh.x = Math.max(10, Math.min(w - 10, sh.x * scaleX));
+          sh.y = Math.max(10, Math.min(h - 10, sh.y * scaleY));
+        }
+      }
+    }
+  }
+
   private initStars() {
     this.stars = [];
-    for (let i = 0; i < 220; i++) {
+    const count = Math.min(260, Math.floor((this.width * this.height) / 3800));
+    for (let i = 0; i < count; i++) {
       this.stars.push({
-        x: Math.random() * VIEW_WIDTH,
-        y: Math.random() * VIEW_HEIGHT,
+        x: Math.random() * this.width,
+        y: Math.random() * this.height,
         size: Math.random() < 0.85 ? 1 : Math.random() * 2 + 1,
         alpha: 0.3 + Math.random() * 0.7,
         twinkleSpeed: 0.5 + Math.random() * 2.0
@@ -215,33 +343,41 @@ export class WarHeadsEngine {
     this.currentSeed = actualSeed;
     const rng = createPRNG(actualSeed);
 
-    // 1. Procedural generation of 3 to 5 planets spaced in a vertical column
+    const w = this.width;
+    const h = this.height;
+
+    // 1. Generación procedural con descongestión orbital: 3 a 4 planetas bien repartidos
+    // Radios reducidos: 24px a 65px (máximo 70px) con distancia mínima garantizada (radioA + radioB + 90)
     this.planets = [];
-    const planetCount = Math.floor(rng() * 3) + 3; // 3 to 5 planets
+    const targetPlanetCount = Math.floor(rng() * 2) + 3; // 3 a 4 planetas
     const planetTypes: PlanetType[] = ['rocky', 'gas_giant', 'earth', 'volcanic'];
 
-    const vTop = 160;
-    const vBottom = VIEW_HEIGHT - 160;
-    const vSlice = (vBottom - vTop) / planetCount;
+    const vTop = 60;
+    const vBottom = h - 60;
+    const vSlice = (vBottom - vTop) / targetPlanetCount;
 
-    for (let i = 0; i < planetCount; i++) {
-      const radius = Math.floor(40 + rng() * 45); // 40px to 85px
-      const sliceMinY = vTop + i * vSlice + radius * 0.5;
-      const sliceMaxY = vTop + (i + 1) * vSlice - radius * 0.5;
-      
+    for (let i = 0; i < targetPlanetCount; i++) {
+      // Radios reducidos entre 24px (lunas pequeñas) y 65px (planetas medianos/grandes)
+      const radius = Math.floor(24 + rng() * 41); // 24px a 65px
+      const sliceMinY = vTop + i * vSlice + radius;
+      const sliceMaxY = vTop + (i + 1) * vSlice - radius;
+
+      const minX = radius + 40;
+      const maxX = Math.max(minX + 20, w - radius - 40);
+
       let bestX = 0;
       let bestY = 0;
       let placed = false;
 
       for (let attempt = 0; attempt < 100; attempt++) {
-        // Alternate between left and right side of vertical column for dynamic gravitational corridors
-        const sideOffset = (i % 2 === 0) ? (rng() * 0.4 + 0.1) : (rng() * 0.4 + 0.5);
-        const cx = radius + 35 + sideOffset * (VIEW_WIDTH - (radius + 35) * 2);
-        const cy = sliceMinY + rng() * Math.max(15, sliceMaxY - sliceMinY);
+        const sideOffset = (i % 2 === 0) ? (rng() * 0.45) : (0.55 + rng() * 0.45);
+        const cx = minX + sideOffset * (maxX - minX);
+        const cy = sliceMinY + rng() * Math.max(10, sliceMaxY - sliceMinY);
 
         let overlap = false;
         for (const existing of this.planets) {
-          const minDist = radius + existing.radius + 45;
+          // Distancia mínima garantizada entre bordes: distancia(centroA, centroB) >= radioA + radioB + 90
+          const minDist = radius + existing.radius + 90;
           if (Math.hypot(cx - existing.x, cy - existing.y) < minDist) {
             overlap = true;
             break;
@@ -256,13 +392,13 @@ export class WarHeadsEngine {
         }
       }
 
+      // Si un planeta no cabe sin tocar a otro tras 100 intentos, se descarta para mantener el espacio limpio
       if (!placed) {
-        bestX = Math.round(VIEW_WIDTH * (i % 2 === 0 ? 0.35 : 0.65));
-        bestY = Math.round((sliceMinY + sliceMaxY) / 2);
+        continue;
       }
 
       const type = planetTypes[Math.floor(rng() * planetTypes.length)];
-      const baseMass = Math.max(35, Math.round(180 * Math.pow(radius / 65, 2)));
+      const baseMass = Math.max(25, Math.round(140 * Math.pow(radius / 45, 2)));
       const planetCanvas = generatePlanetCanvas({
         type,
         radius,
@@ -270,7 +406,7 @@ export class WarHeadsEngine {
       });
 
       this.planets.push({
-        id: i + 1,
+        id: this.planets.length + 1,
         x: bestX,
         y: bestY,
         radius,
@@ -284,21 +420,21 @@ export class WarHeadsEngine {
       });
     }
 
-    // Safety fallback
+    // Asegurar entre 3 y 4 planetas bien repartidos a lo largo de toda la columna vertical
     while (this.planets.length < 3) {
       const idx = this.planets.length;
-      const fallbackRadius = 55;
-      const fx = Math.round(VIEW_WIDTH * (idx % 2 === 0 ? 0.35 : 0.65));
-      const fy = Math.round(250 + idx * 380);
+      const fallbackRadius = 28;
+      const fx = Math.round(w * (idx % 2 === 0 ? 0.35 : 0.65));
+      const fy = Math.round(110 + idx * ((h - 220) / 2));
       const pCanvas = generatePlanetCanvas({ type: 'rocky', radius: fallbackRadius, seed: 101 * (idx + 1) });
       this.planets.push({
-        id: idx + 1,
+        id: this.planets.length + 1,
         x: fx,
         y: fy,
         radius: fallbackRadius,
         initialRadius: fallbackRadius,
-        baseMass: 180,
-        currentMass: 180,
+        baseMass: 90,
+        currentMass: 90,
         type: 'rocky',
         canvas: pCanvas,
         ctx: pCanvas.getContext('2d', { willReadFrequently: true })!,
@@ -312,13 +448,13 @@ export class WarHeadsEngine {
     let coinId = 1;
 
     // (a) Floating Orbital Coins (6 to 8 coins in vacuum)
-    const orbitalCount = Math.floor(6 + rng() * 3);
+    const orbitalCount = Math.floor(5 + rng() * 3);
     for (let c = 0; c < orbitalCount; c++) {
-      let cx = 80 + rng() * (VIEW_WIDTH - 160);
-      let cy = 80 + rng() * (VIEW_HEIGHT - 160);
+      let cx = 35 + rng() * (w - 70);
+      let cy = 40 + rng() * (h - 80);
       let insidePlanet = false;
       for (const p of this.planets) {
-        if (Math.hypot(cx - p.x, cy - p.y) < p.radius + 22) {
+        if (Math.hypot(cx - p.x, cy - p.y) < p.radius + 20) {
           insidePlanet = true;
           break;
         }
@@ -399,8 +535,8 @@ export class WarHeadsEngine {
       const sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
 
       // Aim towards arena center
-      const targetX = VIEW_WIDTH / 2;
-      const targetY = VIEW_HEIGHT / 2;
+      const targetX = this.width / 2;
+      const targetY = this.height / 2;
       const aimDeg = Math.round(((Math.atan2(sy - targetY, targetX - sx) * 180) / Math.PI + 360) % 360);
 
       const pid = (i + 1) as PlayerId;
@@ -430,11 +566,41 @@ export class WarHeadsEngine {
         vx: 0,
         vy: 0,
         flightTime: 0,
-        jumpTrail: []
+        jumpTrail: [],
+        shieldType: 'deflector',
+        lastHitTime: 0
       });
     }
 
     this.onStateUpdate?.();
+  }
+
+
+  public selectShield(shieldId: ShieldType): boolean {
+    if (this.isSimulating || this.roundWinner) return false;
+    const currentShip = this.ships.find(s => s.id === this.currentTurn);
+    if (!currentShip || !currentShip.alive) return false;
+    const def = SHIELD_CATALOG.find(s => s.id === shieldId);
+    if (!def) return false;
+    if (currentShip.shieldType === shieldId) return true;
+
+    if (def.price > 0 && currentShip.credits < def.price) {
+      sound.playBeep(180, 0.1);
+      return false;
+    }
+
+    if (def.price > 0) {
+      currentShip.credits -= def.price;
+    }
+
+    currentShip.shieldType = shieldId;
+    if (shieldId === 'bastion') {
+      currentShip.maxShield = 1300;
+      currentShip.shield = Math.min(1300, currentShip.shield + 800);
+    }
+    sound.playBeep(960, 0.1);
+    this.onStateUpdate?.();
+    return true;
   }
 
   public fireCurrentWeapon(): boolean {
@@ -763,7 +929,15 @@ export class WarHeadsEngine {
         const falloff = Math.max(0, 1 - sDist / effectiveRadius);
         const rawDmg = Math.round(w.damage * falloff);
 
+        ship.lastHitTime = performance.now();
         let finalHpLoss = 0;
+
+        // Inmunidad Anti-PEM: Inmunidad total contra drenaje de sistemas y combustible
+        if (w.specialBehavior === 'emp' && ship.shieldType === 'anti_emp') {
+          sound.playBeep(1280, 0.06);
+          continue;
+        }
+
         if (w.specialBehavior === 'emp') {
           // EMP Disruptor: 60 HP to health, drains 100% shield, drains 50% fuel
           ship.shield = 0;
@@ -771,21 +945,38 @@ export class WarHeadsEngine {
           finalHpLoss = Math.min(ship.hp, rawDmg);
           ship.hp = Math.max(0, ship.hp - rawDmg);
         } else if (w.specialBehavior === 'repulsor') {
-          // Kinetic Concussion Hammer: 80 HP damage, massive unanchoring thrust into orbit
-          const pushAngle = Math.atan2(ship.y - hitY, ship.x - hitX);
-          const pushForce = 9.5;
-          ship.vx = Math.cos(pushAngle) * pushForce;
-          ship.vy = Math.sin(pushAngle) * pushForce;
-          ship.isAirborne = true;
-          ship.flightTime = 0;
-          ship.jumpTrail = [];
-          sound.playHyperJump();
+          // Kinetic Concussion Hammer: Bastión Pesado es inmune a ser arrancado
+          if (ship.shieldType !== 'bastion') {
+            const pushAngle = Math.atan2(ship.y - hitY, ship.x - hitX);
+            const pushForce = 9.5;
+            ship.vx = Math.cos(pushAngle) * pushForce;
+            ship.vy = Math.sin(pushAngle) * pushForce;
+            ship.isAirborne = true;
+            ship.flightTime = 0;
+            ship.jumpTrail = [];
+            sound.playHyperJump();
+          }
           finalHpLoss = Math.min(ship.hp, rawDmg);
           ship.hp = Math.max(0, ship.hp - rawDmg);
         } else {
-          // Standard / Exotic weapons: Plasma Shield absorbs 50% of incoming damage
           let dmgToApply = rawDmg;
-          if (ship.shield > 0) {
+
+          // Colector / Absorción: Convierte 60% del daño en recarga de combustible (+35%) y +30 CR
+          if (ship.shieldType === 'absorb') {
+            const absorbedDmg = Math.round(dmgToApply * 0.6);
+            dmgToApply -= absorbedDmg;
+            ship.fuel = Math.min(100, ship.fuel + 35);
+            ship.credits += 30;
+          }
+
+          // Bastión Pesado: absorbe 80% del daño con sus 800+ SP
+          if (ship.shieldType === 'bastion' && ship.shield > 0) {
+            const bastionAbsorb = Math.round(dmgToApply * 0.8);
+            const actualAbsorbed = Math.min(ship.shield, bastionAbsorb);
+            ship.shield -= actualAbsorbed;
+            dmgToApply -= actualAbsorbed;
+          } else if (ship.shield > 0) {
+            // Deflector Estándar y escudos normales absorben 50% de daño directo
             const shieldAbsorbable = Math.round(dmgToApply * 0.5);
             const actualAbsorbed = Math.min(ship.shield, shieldAbsorbable);
             ship.shield -= actualAbsorbed;
@@ -1097,6 +1288,21 @@ export class WarHeadsEngine {
           }
         }
 
+
+        // Escudo Gravitatorio Repulsor: desvía proyectiles aproximándose a menos de 85px de naves rivales
+        for (const ship of this.ships) {
+          if (ship.alive && ship.shieldType === 'repulsor' && ship.id !== p.ownerId) {
+            const repDx = p.x - ship.x;
+            const repDy = p.y - ship.y;
+            const repDist = Math.hypot(repDx, repDy);
+            if (repDist > 0 && repDist < 85) {
+              const repForce = (1 - repDist / 85) * 350;
+              totalAx += (repDx / repDist) * repForce;
+              totalAy += (repDy / repDist) * repForce;
+            }
+          }
+        }
+
         p.vx += totalAx * subDt;
         p.vy += totalAy * subDt;
 
@@ -1119,20 +1325,67 @@ export class WarHeadsEngine {
 
         // Toroidal Screen Wrap (Clean wrap with trail reset to avoid cross-screen lines)
         let didWrap = false;
-        if (p.x < 0) { p.x += VIEW_WIDTH; didWrap = true; }
-        else if (p.x >= VIEW_WIDTH) { p.x -= VIEW_WIDTH; didWrap = true; }
-        if (p.y < 0) { p.y += VIEW_HEIGHT; didWrap = true; }
-        else if (p.y >= VIEW_HEIGHT) { p.y -= VIEW_HEIGHT; didWrap = true; }
+        if (p.x < 0) { p.x += this.width; didWrap = true; }
+        else if (p.x >= this.width) { p.x -= this.width; didWrap = true; }
+        if (p.y < 0) { p.y += this.height; didWrap = true; }
+        else if (p.y >= this.height) { p.y -= this.height; didWrap = true; }
 
         if (didWrap) {
           p.trail = [];
         }
 
-        // Direct impact against ships
+        // Direct impact against ships with reactive shields
         let hitShip = false;
         for (const ship of this.ships) {
           if (!ship.alive) continue;
-          if (Math.hypot(p.x - ship.x, p.y - ship.y) < 16) {
+          if (Math.hypot(p.x - ship.x, p.y - ship.y) < 18) {
+            // 1. Cuántico de Fase: la nave es semi-incorpórea; proyectiles cinéticos la atraviesan sin daño
+            if (ship.shieldType === 'phase' && p.weapon.specialBehavior !== 'emp' && p.weapon.specialBehavior !== 'singularity') {
+              for (let pt = 0; pt < 4; pt++) {
+                this.particles.push({
+                  x: p.x, y: p.y,
+                  vx: (Math.random() - 0.5) * 2,
+                  vy: (Math.random() - 0.5) * 2,
+                  color: '#818cf8', size: 2.5, life: 0, maxLife: 15
+                });
+              }
+              continue; // Atraviesa sin detonar
+            }
+
+            // 2. Rebote / Ricochet: proyectiles balísticos y metralla rebotan elásticamente en ángulo opuesto
+            if (ship.shieldType === 'ricochet' && p.weapon.category !== 'exotic' && p.weapon.specialBehavior !== 'singularity') {
+              p.vx = -p.vx * 1.1;
+              p.vy = -p.vy * 1.1;
+              p.ownerId = ship.id;
+              sound.playRockCrumble();
+              for (let pt = 0; pt < 8; pt++) {
+                this.particles.push({
+                  x: p.x, y: p.y,
+                  vx: (Math.random() - 0.5) * 4,
+                  vy: (Math.random() - 0.5) * 4,
+                  color: '#a855f7', size: 3, life: 0, maxLife: 20
+                });
+              }
+              continue; // Rebota elásticamente
+            }
+
+            // 3. Espejo Reflector: refleja armas de taquiones y rayos de energía hacia el atacante
+            if (ship.shieldType === 'reflector' && (p.weapon.specialBehavior === 'tachyon' || p.weapon.specialBehavior === 'sparrow' || p.weapon.specialBehavior === 'laser')) {
+              p.vx = -p.vx * 1.25;
+              p.vy = -p.vy * 1.25;
+              p.ownerId = ship.id;
+              sound.playBeep(1280, 0.06);
+              for (let pt = 0; pt < 10; pt++) {
+                this.particles.push({
+                  x: p.x, y: p.y,
+                  vx: (Math.random() - 0.5) * 5,
+                  vy: (Math.random() - 0.5) * 5,
+                  color: '#f43f5e', size: 3.5, life: 0, maxLife: 25
+                });
+              }
+              continue; // Refleja hacia el atacante
+            }
+
             this.detonate(p, p.x, p.y);
             this.projectiles.splice(pIdx, 1);
             hitShip = true;
@@ -1318,10 +1571,10 @@ export class WarHeadsEngine {
 
         // Toroidal Screen Wrap (Clean wrap with trail reset to avoid cross-screen lines)
         let shipWrapped = false;
-        if (ship.x < 0) { ship.x += VIEW_WIDTH; shipWrapped = true; }
-        else if (ship.x >= VIEW_WIDTH) { ship.x -= VIEW_WIDTH; shipWrapped = true; }
-        if (ship.y < 0) { ship.y += VIEW_HEIGHT; shipWrapped = true; }
-        else if (ship.y >= VIEW_HEIGHT) { ship.y -= VIEW_HEIGHT; shipWrapped = true; }
+        if (ship.x < 0) { ship.x += this.width; shipWrapped = true; }
+        else if (ship.x >= this.width) { ship.x -= this.width; shipWrapped = true; }
+        if (ship.y < 0) { ship.y += this.height; shipWrapped = true; }
+        else if (ship.y >= this.height) { ship.y -= this.height; shipWrapped = true; }
 
         if (shipWrapped) {
           // BREAK TRAIL to avoid cross-screen streak
@@ -1370,10 +1623,10 @@ export class WarHeadsEngine {
       pt.life++;
       pt.x += pt.vx;
       pt.y += pt.vy;
-      if (pt.x < 0) pt.x += VIEW_WIDTH;
-      else if (pt.x >= VIEW_WIDTH) pt.x -= VIEW_WIDTH;
-      if (pt.y < 0) pt.y += VIEW_HEIGHT;
-      else if (pt.y >= VIEW_HEIGHT) pt.y -= VIEW_HEIGHT;
+      if (pt.x < 0) pt.x += this.width;
+      else if (pt.x >= this.width) pt.x -= this.width;
+      if (pt.y < 0) pt.y += this.height;
+      else if (pt.y >= this.height) pt.y -= this.height;
 
       if (pt.life >= pt.maxLife) {
         this.particles.splice(i, 1);
@@ -1405,22 +1658,22 @@ export class WarHeadsEngine {
 
     // 1. Deep Space Vacuum Background (100% Fixed)
     ctx.fillStyle = '#05070d';
-    ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+    ctx.fillRect(0, 0, this.width, this.height);
 
     // Tactical Radar Lines
     ctx.save();
     ctx.strokeStyle = 'rgba(56, 189, 248, 0.04)';
     ctx.lineWidth = 1;
-    for (let x = 0; x < VIEW_WIDTH; x += 80) {
+    for (let x = 0; x < this.width; x += 80) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, VIEW_HEIGHT);
+      ctx.lineTo(x, this.height);
       ctx.stroke();
     }
-    for (let y = 0; y < VIEW_HEIGHT; y += 80) {
+    for (let y = 0; y < this.height; y += 80) {
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(VIEW_WIDTH, y);
+      ctx.lineTo(this.width, y);
       ctx.stroke();
     }
     ctx.restore();
@@ -1662,17 +1915,18 @@ export class WarHeadsEngine {
     }
     ctx.rotate(shipAngle);
 
-    // Deflector Shield Perimeter Contour with Player Distinctive Color (P1: Cian, P2: Carmesí, P3: Ámbar)
+    // Visual Reactive Shield Perimeter Contour
+    const shieldDef = SHIELD_CATALOG.find(s => s.id === ship.shieldType) || SHIELD_CATALOG[0];
     ctx.save();
-    ctx.strokeStyle = ship.color;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = shieldDef.color;
+    ctx.lineWidth = ship.shieldType === 'bastion' ? 2.5 : 1.5;
+    ctx.setLineDash(ship.shieldType === 'ricochet' ? [2, 2] : [4, 4]);
     ctx.beginPath();
     ctx.arc(0, -6, 23, 0, Math.PI * 2);
     ctx.stroke();
     if (ship.shield > 0) {
-      ctx.globalAlpha = 0.22;
-      ctx.fillStyle = ship.color;
+      ctx.globalAlpha = ship.shieldType === 'bastion' ? 0.35 : 0.22;
+      ctx.fillStyle = shieldDef.color;
       ctx.fill();
     }
     ctx.restore();
@@ -2234,25 +2488,36 @@ export class WarHeadsEngine {
     ctx.strokeRect(0, -2, 17, 4);
     ctx.restore();
 
-    // Overhead HUD Info: HP, Shield & Credits tag
+    // Overhead micro-indicador minimalista (Cero textos gigantes que tapen el juego)
     ctx.restore();
     ctx.save();
-    const barWidth = 36;
-    const barHeight = 3.5;
-    const bx = ship.x - barWidth / 2;
-    const by = ship.y - 32;
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    ctx.fillRect(bx, by, barWidth, barHeight);
+    // 1. Triángulo diminuto del color del jugador (P1: Cian, P2: Carmesí, P3: Ámbar)
+    const triY = ship.y - 18;
     ctx.fillStyle = ship.color;
-    ctx.fillRect(bx, by, (ship.hp / ship.maxHp) * barWidth, barHeight);
+    ctx.beginPath();
+    ctx.moveTo(ship.x - 3.5, triY);
+    ctx.lineTo(ship.x + 3.5, triY);
+    ctx.lineTo(ship.x, triY + 4.5);
+    ctx.closePath();
+    ctx.fill();
 
-    ctx.font = 'bold 9px monospace';
-    ctx.fillStyle = ship.color;
-    ctx.textAlign = 'center';
-    ctx.fillText(`${ship.name} [${ship.hp}/${ship.maxHp} HP]`, ship.x, by - 4);
-    ctx.fillStyle = '#facc15';
-    ctx.fillText(`${ship.credits} CR`, ship.x, by + 12);
+    // 2. Mini-barra de vida (24px de ancho x 3px de alto) que solo se ilumina al recibir daño
+    const isDamaged = ship.hp < ship.maxHp;
+    const isRecentHit = (performance.now() - (ship.lastHitTime || 0)) < 3000;
+    if (isDamaged && isRecentHit) {
+      const barW = 24;
+      const barH = 3;
+      const bx = ship.x - barW / 2;
+      const by = ship.y - 25;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(bx, by, barW, barH);
+      ctx.fillStyle = ship.hp > 300 ? ship.color : '#ef4444';
+      ctx.fillRect(bx, by, Math.max(1, (ship.hp / ship.maxHp) * barW), barH);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(bx, by, barW, barH);
+    }
     ctx.restore();
   }
 
@@ -2284,10 +2549,10 @@ export class WarHeadsEngine {
       simX += simVx;
       simY += simVy;
 
-      if (simX < 0) simX += VIEW_WIDTH;
-      else if (simX >= VIEW_WIDTH) simX -= VIEW_WIDTH;
-      if (simY < 0) simY += VIEW_HEIGHT;
-      else if (simY >= VIEW_HEIGHT) simY -= VIEW_HEIGHT;
+      if (simX < 0) simX += this.width;
+      else if (simX >= this.width) simX -= this.width;
+      if (simY < 0) simY += this.height;
+      else if (simY >= this.height) simY -= this.height;
 
       ctx.globalAlpha = 0.85 * (1 - step / steps);
       ctx.beginPath();
