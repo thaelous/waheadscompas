@@ -9,8 +9,8 @@ import { generatePlanetCanvas, drawAtmosphereGlow, PlanetType } from './noise';
 import { WeaponDef, WEAPON_CATALOG } from './weapons';
 import { sound } from './audio';
 
-export const VIEW_WIDTH = 1280;
-export const VIEW_HEIGHT = 720;
+export const VIEW_WIDTH = 720;
+export const VIEW_HEIGHT = 1280;
 export const G_CONSTANT = 2200; // Gravitational constant scale with Plummer softening
 export const PLUMMER_EPSILON_SQ = 625; // Plummer softening epsilon = 25 pixels (25^2 = 625)
 
@@ -215,24 +215,33 @@ export class WarHeadsEngine {
     this.currentSeed = actualSeed;
     const rng = createPRNG(actualSeed);
 
-    // 1. Procedural generation of 3 to 6 planets with varying radii
+    // 1. Procedural generation of 3 to 5 planets spaced in a vertical column
     this.planets = [];
-    const planetCount = Math.floor(rng() * 4) + 3; // 3 to 6 planets
+    const planetCount = Math.floor(rng() * 3) + 3; // 3 to 5 planets
     const planetTypes: PlanetType[] = ['rocky', 'gas_giant', 'earth', 'volcanic'];
 
+    const vTop = 160;
+    const vBottom = VIEW_HEIGHT - 160;
+    const vSlice = (vBottom - vTop) / planetCount;
+
     for (let i = 0; i < planetCount; i++) {
-      const radius = Math.floor(38 + rng() * 72); // 38px to 110px
+      const radius = Math.floor(40 + rng() * 45); // 40px to 85px
+      const sliceMinY = vTop + i * vSlice + radius * 0.5;
+      const sliceMaxY = vTop + (i + 1) * vSlice - radius * 0.5;
+      
       let bestX = 0;
       let bestY = 0;
       let placed = false;
 
-      for (let attempt = 0; attempt < 250; attempt++) {
-        const cx = radius + 60 + rng() * (VIEW_WIDTH - (radius + 60) * 2);
-        const cy = radius + 70 + rng() * (VIEW_HEIGHT - (radius + 70) * 2);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        // Alternate between left and right side of vertical column for dynamic gravitational corridors
+        const sideOffset = (i % 2 === 0) ? (rng() * 0.4 + 0.1) : (rng() * 0.4 + 0.5);
+        const cx = radius + 35 + sideOffset * (VIEW_WIDTH - (radius + 35) * 2);
+        const cy = sliceMinY + rng() * Math.max(15, sliceMaxY - sliceMinY);
 
         let overlap = false;
         for (const existing of this.planets) {
-          const minDist = radius + existing.radius + 60;
+          const minDist = radius + existing.radius + 45;
           if (Math.hypot(cx - existing.x, cy - existing.y) < minDist) {
             overlap = true;
             break;
@@ -247,10 +256,13 @@ export class WarHeadsEngine {
         }
       }
 
-      if (!placed) continue;
+      if (!placed) {
+        bestX = Math.round(VIEW_WIDTH * (i % 2 === 0 ? 0.35 : 0.65));
+        bestY = Math.round((sliceMinY + sliceMaxY) / 2);
+      }
 
       const type = planetTypes[Math.floor(rng() * planetTypes.length)];
-      const baseMass = Math.max(35, Math.round(180 * Math.pow(radius / 75, 2)));
+      const baseMass = Math.max(35, Math.round(180 * Math.pow(radius / 65, 2)));
       const planetCanvas = generatePlanetCanvas({
         type,
         radius,
@@ -272,15 +284,17 @@ export class WarHeadsEngine {
       });
     }
 
-    // Safety check: at least 3 planets
+    // Safety fallback
     while (this.planets.length < 3) {
-      const fallbackRadius = 80;
-      const fx = 250 + this.planets.length * 360;
-      const pCanvas = generatePlanetCanvas({ type: 'rocky', radius: fallbackRadius, seed: 101 * (this.planets.length + 1) });
+      const idx = this.planets.length;
+      const fallbackRadius = 55;
+      const fx = Math.round(VIEW_WIDTH * (idx % 2 === 0 ? 0.35 : 0.65));
+      const fy = Math.round(250 + idx * 380);
+      const pCanvas = generatePlanetCanvas({ type: 'rocky', radius: fallbackRadius, seed: 101 * (idx + 1) });
       this.planets.push({
-        id: this.planets.length + 1,
+        id: idx + 1,
         x: fx,
-        y: 360,
+        y: fy,
         radius: fallbackRadius,
         initialRadius: fallbackRadius,
         baseMass: 180,
@@ -341,18 +355,18 @@ export class WarHeadsEngine {
       }
     }
 
-    // 3. Place 1 to 3 Ships on distinct, well-spaced planets
+    // 3. Place 1 to 3 Ships on distinct, vertically spaced planets
     const count = this.gameConfig.playerCount;
-    const sortedPlanets = [...this.planets].sort((a, b) => a.x - b.x);
+    const sortedPlanets = [...this.planets].sort((a, b) => a.y - b.y);
 
     let chosenPlanets: Planet[] = [];
     if (count === 1) {
-      // 1 Human vs IA
+      // 1 Human vs IA (Top vs Bottom)
       chosenPlanets = [sortedPlanets[0], sortedPlanets[sortedPlanets.length - 1]];
     } else if (count === 2) {
       chosenPlanets = [sortedPlanets[0], sortedPlanets[sortedPlanets.length - 1]];
     } else {
-      // 3 Players
+      // 3 Players (Top vs Mid vs Bottom)
       const mid = Math.floor(sortedPlanets.length / 2);
       chosenPlanets = [sortedPlanets[0], sortedPlanets[mid], sortedPlanets[sortedPlanets.length - 1]];
     }
@@ -368,11 +382,23 @@ export class WarHeadsEngine {
     this.ships = [];
     for (let i = 0; i < activeCount; i++) {
       const pl = chosenPlanets[i % chosenPlanets.length];
-      const sAngle = -Math.PI * (0.35 + rng() * 0.3);
+      
+      let sAngle = -Math.PI / 2;
+      if (i === 0) {
+        // Top planet: ship positioned on bottom/lateral of planet facing into arena
+        sAngle = Math.PI * 0.5 + (rng() - 0.5) * 0.5;
+      } else if (i === 1) {
+        // Bottom planet: ship positioned on top of planet facing upward
+        sAngle = -Math.PI * 0.5 + (rng() - 0.5) * 0.5;
+      } else {
+        // Mid planet
+        sAngle = (rng() > 0.5 ? 0.1 : Math.PI - 0.1) + (rng() - 0.5) * 0.4;
+      }
+
       const sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
       const sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
 
-      // Aim towards center or opponent
+      // Aim towards arena center
       const targetX = VIEW_WIDTH / 2;
       const targetY = VIEW_HEIGHT / 2;
       const aimDeg = Math.round(((Math.atan2(sy - targetY, targetX - sx) * 180) / Math.PI + 360) % 360);

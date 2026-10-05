@@ -684,14 +684,14 @@ export default function App() {
                 className="mt-3 px-6 py-3 bg-slate-900/90 border border-emerald-500 hover:border-emerald-400 text-emerald-400 hover:text-emerald-300 font-bold text-xs sm:text-sm tracking-wider uppercase rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2.5 w-full sm:w-auto"
               >
                 <Smartphone className="w-4 h-4 text-emerald-400" />
-                <span>[ 📲 INSTALAR EN EL DISPOSITIVO ]</span>
+                <span>[ 📲 INSTALAR APP EN MÓVIL ]</span>
               </button>
             )}
 
             {/* Micro-tooltip para Safari en iOS */}
             {isIOS && !isInstalled && (
               <div className="mt-2 text-[11px] text-slate-400 bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded-lg max-w-sm">
-                Pulsa <strong className="text-cyan-300">Compartir</strong> (⎋) y luego <strong className="text-cyan-300">'Agregar al inicio'</strong> para instalar.
+                En Safari pulsa <strong className="text-cyan-300">Compartir &gt; Agregar a Inicio</strong> para instalar la app.
               </div>
             )}
 
@@ -847,22 +847,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* 100% FIXED TACTICAL VIEWPORT (1280x720 internal resolution, object-fit: contain) */}
-      <div className="relative flex-1 min-h-0 w-full bg-black flex items-center justify-center overflow-hidden p-0.5 sm:p-2 select-none touch-none">
-        {/* Mobile Portrait Rotation Helper */}
-        {isPortrait && !dismissRotateTip && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 bg-cyan-950/95 border border-cyan-500/80 rounded-full shadow-lg text-[11px] font-mono text-cyan-200">
-            <Smartphone className="w-3.5 h-3.5 animate-pulse text-cyan-400" />
-            <span>Gira a horizontal para vista apaisada</span>
-            <button
-              onClick={() => setDismissRotateTip(true)}
-              className="ml-1 p-0.5 hover:text-white rounded-full bg-cyan-900/60"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
+      {/* 100% FIXED TACTICAL VIEWPORT (720x1280 internal portrait resolution, object-fit: contain) */}
+      <div className="relative flex-1 min-h-0 w-full bg-black flex items-center justify-center overflow-hidden p-0.5 sm:p-1 select-none touch-none">
         <canvas
           ref={canvasRef}
           width={VIEW_WIDTH}
@@ -871,7 +857,7 @@ export default function App() {
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={handleCanvasPointerUp}
           onPointerCancel={handleCanvasPointerUp}
-          className="max-h-full max-w-full aspect-[16/9] object-contain shadow-2xl block touch-none cursor-crosshair"
+          className="h-full max-h-full aspect-[9/16] object-contain shadow-2xl block touch-none cursor-crosshair"
           style={{ imageRendering: 'auto' }}
         />
 
@@ -1036,7 +1022,8 @@ export default function App() {
         )}
       </div>
 
-      {/* 1. DESKTOP RETRO MILITARY HUD DASHBOARD (hidden on mobile, block on md+) */}
+      {/* 1. DESKTOP RETRO MILITARY HUD DASHBOARD (hidden) */}
+      {false && (
       <footer className="hidden md:block w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t-2 border-cyan-900/80 p-2 sm:p-3 shadow-2xl z-20 shrink-0">
         <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-2 sm:gap-4 items-center">
 
@@ -1231,11 +1218,11 @@ export default function App() {
           </div>
         </div>
       </footer>
+      )}
 
-      {/* 2. MOBILE DEDICATED CONTROLLER (block on mobile, hidden on md+) */}
-      {/* 2A. MOBILE PORTRAIT TACTICAL BATTLE COCKPIT */}
-      {isPortrait ? (
-        <footer className="block md:hidden w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t border-cyan-900/80 p-2 shadow-2xl z-20 shrink-0 font-mono select-none">
+      {/* 2. CONSOLA TÁCTICA INFERIOR FIJA (PORTRAIT FIRST) */}
+      {true ? (
+        <footer className="w-full bg-gradient-to-t from-slate-950 via-slate-900 to-slate-950 border-t-2 border-cyan-900/80 p-2 shadow-2xl z-20 shrink-0 font-mono select-none">
           <div className="flex flex-col gap-2 max-w-md mx-auto">
             {/* Status Strip: Active Player, HP, SP, Fuel & CR */}
             <div className="flex items-center justify-between px-2 py-1 bg-slate-950/90 border border-slate-800 rounded-lg text-[10px]">
@@ -1251,19 +1238,19 @@ export default function App() {
               </div>
             </div>
 
-            {/* Main Tactical Deck: Circular Touch Dial (Left) & Power/Launch Center (Right) */}
-            <div className="grid grid-cols-2 gap-2 bg-slate-950/95 border border-slate-800/80 p-2 rounded-xl shadow-inner">
-              {/* Left Bay: 360° Circular Rotary Dial & Stepper Buttons */}
-              <div className="flex flex-col items-center justify-between gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <div className="flex items-center justify-between w-full px-1 text-[10px]">
+            {/* Main Tactical Deck: 3 Ergonomic Sections for Portrait Thumbs */}
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-2 bg-slate-950/95 border border-slate-800/80 p-2 rounded-xl shadow-inner">
+              {/* LADO IZQUIERDO: Dial Táctil 360° Circular + Botones [-] / [+] de mínimo 48px */}
+              <div className="flex flex-col items-center justify-between p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                <div className="flex items-center justify-between w-full px-1 text-[9px] sm:text-[10px]">
                   <span className="text-slate-400 uppercase font-bold">ÁNGULO</span>
-                  <span className="text-sm font-black text-cyan-400 tabular-nums">
+                  <span className="text-xs sm:text-sm font-black text-cyan-400 tabular-nums">
                     {activeShip?.aimAngle.toFixed(1)}°
                   </span>
                 </div>
 
                 {/* Rotary Dial */}
-                <div className="relative w-20 h-20 shrink-0 touch-none">
+                <div className="relative w-16 h-16 sm:w-20 sm:h-20 shrink-0 my-1 touch-none">
                   <svg
                     ref={mobileDialRef}
                     viewBox="-50 -50 100 100"
@@ -1290,11 +1277,11 @@ export default function App() {
                 </div>
 
                 {/* Angle Precision Stepper Buttons (Min 48px Height) */}
-                <div className="flex items-center gap-1.5 w-full mt-1">
+                <div className="flex items-center gap-1 w-full">
                   <button
                     onClick={() => adjustAngle(-1)}
                     disabled={isSimulating || activeShip?.isAI}
-                    className="flex-1 h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40"
+                    className="flex-1 min-h-[48px] h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-base sm:text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40 cursor-pointer"
                     title="Disminuir 1 grado [-]"
                   >
                     [-]
@@ -1302,7 +1289,7 @@ export default function App() {
                   <button
                     onClick={() => adjustAngle(1)}
                     disabled={isSimulating || activeShip?.isAI}
-                    className="flex-1 h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40"
+                    className="flex-1 min-h-[48px] h-12 flex items-center justify-center bg-slate-900 active:bg-cyan-800 border-2 border-slate-700 text-base sm:text-lg font-black text-cyan-300 rounded-lg shadow disabled:opacity-40 cursor-pointer"
                     title="Aumentar 1 grado [+]"
                   >
                     [+]
@@ -1310,17 +1297,17 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Bay: Propulsion & Big Launch Action Buttons (Min 48px Height) */}
-              <div className="flex flex-col justify-between gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="text-slate-400 uppercase font-bold">IMPULSO</span>
-                    <span className="text-sm font-black text-amber-400 tabular-nums">
-                      {activeShip?.power}%
-                    </span>
-                  </div>
+              {/* CENTRO: Barra Táctil de Potencia (0-100%) + Botón Desplegable Grande [ ARSENAL ] */}
+              <div className="flex flex-col justify-between p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                <div className="flex items-center justify-between text-[9px] sm:text-[10px]">
+                  <span className="text-slate-400 uppercase font-bold">POTENCIA</span>
+                  <span className="text-xs sm:text-sm font-black text-amber-400 tabular-nums">
+                    {activeShip?.power}%
+                  </span>
+                </div>
 
-                  {/* Power Slider */}
+                {/* Power Slider */}
+                <div className="flex flex-col gap-1 my-auto">
                   <input
                     type="range"
                     min="10"
@@ -1328,56 +1315,60 @@ export default function App() {
                     value={activeShip?.power || 50}
                     onChange={(e) => adjustPower(Number(e.target.value))}
                     disabled={isSimulating || activeShip?.isAI}
-                    className="w-full accent-amber-500 h-2 bg-slate-800 rounded cursor-pointer disabled:opacity-40"
+                    className="w-full accent-amber-500 h-2.5 bg-slate-800 rounded cursor-pointer disabled:opacity-40"
                   />
-
-                  {/* Quick Power Presets */}
-                  <div className="flex items-center gap-1">
-                    {[25, 50, 75, 100].map((preset) => (
-                      <button
-                        key={preset}
-                        onClick={() => adjustPower(preset)}
-                        disabled={isSimulating || activeShip?.isAI}
-                        className={`flex-1 py-1 rounded text-[9px] font-bold border transition-colors ${
-                          activeShip?.power === preset
-                            ? 'bg-amber-600/90 border-amber-400 text-white shadow'
-                            : 'bg-slate-900 border-slate-800 text-slate-400'
-                        }`}
-                      >
-                        {preset}%
-                      </button>
-                    ))}
+                  <div className="flex justify-between text-[8px] text-slate-500 font-bold px-0.5">
+                    <span>10%</span>
+                    <span>50%</span>
+                    <span>100%</span>
                   </div>
                 </div>
 
-                {/* Big Action Buttons: Retro Amber SALTO ORBITAL & Retro Red DISPARAR (48px) */}
-                <div className="flex flex-col gap-1.5 mt-auto">
-                  <button
-                    onClick={handleHyperJump}
-                    disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
-                    className={`flex items-center justify-center gap-1.5 h-12 font-mono text-xs font-black uppercase rounded-xl border-2 transition-all active:scale-95 ${
-                      isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
-                        ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 border-amber-400 text-white shadow-[0_0_15px_rgba(245,158,11,0.5)] active:from-amber-700'
-                    }`}
-                  >
-                    <Zap className="w-4 h-4 text-amber-300" />
-                    <span>SALTO ORBITAL</span>
-                  </button>
+                {/* Botón Desplegable Grande [ ARSENAL ] */}
+                <button
+                  onClick={() => setShowWeaponMatrix(true)}
+                  disabled={isSimulating || activeShip?.isAI}
+                  className="w-full min-h-[48px] h-12 flex flex-col items-center justify-center bg-gradient-to-r from-sky-950 to-cyan-950 hover:from-sky-900 hover:to-cyan-900 border-2 border-cyan-600 rounded-lg text-cyan-300 font-bold shadow-[0_0_10px_rgba(6,182,212,0.3)] active:scale-95 transition-all cursor-pointer disabled:opacity-40 px-1"
+                >
+                  <div className="flex items-center gap-1 text-[10px] sm:text-xs uppercase tracking-wider">
+                    <Sparkles className="w-3 h-3 text-cyan-400 animate-spin-slow shrink-0" />
+                    <span>[ ARSENAL ]</span>
+                  </div>
+                  <span className="text-[8px] sm:text-[9px] text-slate-300 truncate max-w-[95px]">
+                    {activeWeapon.name}
+                  </span>
+                </button>
+              </div>
 
-                  <button
-                    onClick={handleFire}
-                    disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
-                    className={`flex items-center justify-center gap-2 h-12 font-mono text-sm font-black tracking-widest uppercase rounded-xl border-2 shadow-2xl transition-all active:scale-95 ${
-                      isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                        ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 border-rose-400 text-white shadow-[0_0_20px_rgba(244,63,94,0.7)] active:from-rose-700'
-                    }`}
-                  >
-                    <Target className="w-5 h-5 animate-spin-slow" />
-                    <span>{isSimulating ? 'EN VUELO' : 'DISPARAR'}</span>
-                  </button>
-                </div>
+              {/* LADO DERECHO: Botón Rojo Retro "DISPARAR" + Botón Ámbar "SALTO ORBITAL" */}
+              <div className="flex flex-col justify-between gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                {/* SALTO ORBITAL */}
+                <button
+                  onClick={handleHyperJump}
+                  disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI}
+                  className={`flex items-center justify-center gap-1 min-h-[48px] h-12 font-mono text-xs font-black uppercase rounded-lg border-2 transition-all active:scale-95 ${
+                    isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI
+                      ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 border-amber-400 text-white shadow-[0_0_12px_rgba(245,158,11,0.5)] cursor-pointer'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                  <span>SALTO</span>
+                </button>
+
+                {/* DISPARAR */}
+                <button
+                  onClick={handleFire}
+                  disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
+                  className={`flex items-center justify-center gap-1 min-h-[48px] h-12 font-mono text-xs sm:text-sm font-black tracking-wider uppercase rounded-lg border-2 shadow-2xl transition-all active:scale-95 ${
+                    isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
+                      ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 border-rose-400 text-white shadow-[0_0_15px_rgba(244,63,94,0.7)] cursor-pointer'
+                  }`}
+                >
+                  <Target className="w-4 h-4 animate-spin-slow shrink-0" />
+                  <span>{isSimulating ? 'EN VUELO' : 'DISPARAR'}</span>
+                </button>
               </div>
             </div>
 
@@ -1627,10 +1618,11 @@ export default function App() {
           <div
             className="sci-fi-scrollbar bg-slate-950 border-2 border-cyan-500 rounded-2xl shadow-[0_0_50px_rgba(6,182,212,0.4)] font-mono text-slate-100"
             style={{
-              maxHeight: '90vh',
+              maxHeight: '85vh',
               width: 'min(92vw, 540px)',
               overflowY: 'auto',
               overscrollBehavior: 'contain',
+              touchAction: 'pan-y',
               WebkitOverflowScrolling: 'touch',
               display: 'flex',
               flexDirection: 'column',
@@ -1901,7 +1893,7 @@ export default function App() {
                     onClick={handleInstallPWA}
                     className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
                   >
-                    [ 📲 INSTALAR EN EL DISPOSITIVO ]
+                    [ 📲 INSTALAR APP EN MÓVIL ]
                   </button>
                 </div>
               )}
@@ -1913,7 +1905,7 @@ export default function App() {
                   className="w-full min-h-[56px] h-14 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 active:scale-[0.98] text-white font-black text-sm tracking-wider uppercase rounded-xl border-2 border-cyan-400 shadow-[0_0_25px_rgba(6,182,212,0.6)] transition-all cursor-pointer flex items-center justify-center gap-2"
                 >
                   <Target className="w-5 h-5 animate-spin-slow text-cyan-200" />
-                  <span>[ DESPLEGAR A COMBATE / INICIAR JUEGO ]</span>
+                  <span>[ DESPLEGAR A COMBATE ]</span>
                 </button>
               </div>
             </div>
