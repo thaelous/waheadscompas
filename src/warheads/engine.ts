@@ -432,131 +432,242 @@ export class WarHeadsEngine {
     const w = this.width;
     const h = this.height;
 
-    // 1. Escala espacial amplia y descongestión orbital:
-    // Radios entre 28px y 55px (máximo 60px para el planeta gigante central)
-    // Distancia mínima garantizada: distancia >= radioA + radioB + 110px
+    // 1. ALGORITMO DE POISSON DISK SAMPLING MODIFICADO
+    // - Distribución equitativa por todo el campo orbital (norte, sur y flancos tácticos)
+    // - Distancia mínima estricta de 120px entre bordes: dist >= r1 + r2 + 120
+    // - Evita agrupaciones en el centro: máximo 1 planeta en el núcleo central (radio 145px)
+    // - Márgenes de seguridad estrictos (75px laterales, 110px superior/inferior)
     this.planets = [];
-    const targetPlanetCount = this.gameConfig.playerCount >= 3 ? 5 : (Math.floor(rng() * 2) + 3); // 3 a 4 planetas (1-2 jugadores), 5 para 3 jugadores
+    const minEdgeDistance = 120; // 120px estrictos garantizados entre bordes
+    const marginX = 75;
+    const marginY = 110;
+    const minX = marginX;
+    const maxX = w - marginX;
+    const minY = marginY;
+    const maxY = h - marginY;
+    const arenaCenterX = w / 2;
+    const arenaCenterY = h / 2;
+    const centerCoreRadius = 145; // Zona de exclusión para evitar amontonamiento en el centro
 
-    const vTop = 90;
-    const vBottom = h - 90;
-    const vSlice = (vBottom - vTop) / targetPlanetCount;
+    interface PoissonSample {
+      x: number;
+      y: number;
+      radius: number;
+      type: PlanetMaterialType;
+    }
 
-    for (let i = 0; i < targetPlanetCount; i++) {
-      // Radios moderados: entre 28px y 55px (máximo 60px para el central)
-      let radius = Math.floor(28 + rng() * 27); // 28px a 54px
-      if (i === 1 && targetPlanetCount >= 3) {
-        radius = Math.min(60, radius + 8); // Gigante central hasta 60px
+    const samples: PoissonSample[] = [];
+
+    // Verificador de candidato Poisson: cumple bordes de pantalla, distancia >= r1 + r2 + 120px, y sin amontonamiento central
+    const isValidSample = (cx: number, cy: number, cr: number): boolean => {
+      // Límites de pantalla con márgenes de seguridad
+      if (cx - cr < minX || cx + cr > maxX) return false;
+      if (cy - cr < minY || cy + cr > maxY) return false;
+
+      // Prevención estricta de agrupaciones en el centro: máximo 1 planeta en el núcleo central
+      const distToCenter = Math.hypot(cx - arenaCenterX, cy - arenaCenterY);
+      if (distToCenter < centerCoreRadius) {
+        const inCenter = samples.filter(s => Math.hypot(s.x - arenaCenterX, s.y - arenaCenterY) < centerCoreRadius);
+        if (inCenter.length >= 1) return false;
       }
-      const sliceMinY = vTop + i * vSlice + radius;
-      const sliceMaxY = vTop + (i + 1) * vSlice - radius;
 
-      const minX = radius + 60;
-      const maxX = Math.max(minX + 30, w - radius - 60);
-
-      let bestX = 0;
-      let bestY = 0;
-      let placed = false;
-
-      for (let attempt = 0; attempt < 100; attempt++) {
-        const sideOffset = (i % 2 === 0) ? (0.15 + rng() * 0.35) : (0.50 + rng() * 0.35);
-        const cx = minX + sideOffset * (maxX - minX);
-        const cy = sliceMinY + rng() * Math.max(10, sliceMaxY - sliceMinY);
-
-        let overlap = false;
-        for (const existing of this.planets) {
-          // Distancia mínima garantizada: distancia >= radioA + radioB + 110px
-          const minDist = radius + existing.radius + 110;
-          if (Math.hypot(cx - existing.x, cy - existing.y) < minDist) {
-            overlap = true;
-            break;
-          }
+      // Condición estricta de Poisson Disk con distancia mínima de 120px entre bordes
+      for (const s of samples) {
+        const d = Math.hypot(cx - s.x, cy - s.y);
+        if (d < cr + s.radius + minEdgeDistance) {
+          return false;
         }
+      }
+      return true;
+    };
 
-        if (!overlap) {
-          bestX = Math.round(cx);
-          bestY = Math.round(cy);
-          placed = true;
+    const targetPlanetCount = this.gameConfig.playerCount >= 3 ? (rng() < 0.5 ? 4 : 5) : (rng() < 0.65 ? 3 : 4);
+
+    // Sectores espaciales para distribución equilibrada en el mapa vertical:
+    // Sector 0: Cuadrante Superior Izquierdo (Top-Left - base obligatoria P1)
+    // Sector 1: Cuadrante Inferior Derecho (Bottom-Right - base obligatoria P2)
+    const sectors = [
+      // Sector 0: Cuadrante Superior Izquierdo (Top-Left)
+      {
+        minX: minX + 15, maxX: Math.min(arenaCenterX - 45, minX + (maxX - minX) * 0.40),
+        minY: minY + 15, maxY: Math.min(arenaCenterY - 45, minY + (maxY - minY) * 0.30)
+      },
+      // Sector 1: Cuadrante Inferior Derecho (Bottom-Right)
+      {
+        minX: Math.max(arenaCenterX + 45, maxX - (maxX - minX) * 0.40), maxX: maxX - 15,
+        minY: Math.max(arenaCenterY + 45, maxY - (maxY - minY) * 0.30), maxY: maxY - 15
+      },
+      // Sector 2: Flanco Superior Derecho (Cuadrante Noreste)
+      {
+        minX: Math.max(arenaCenterX + 35, maxX - (maxX - minX) * 0.40), maxX: maxX - 20,
+        minY: minY + 20, maxY: Math.min(arenaCenterY - 35, minY + (maxY - minY) * 0.32)
+      },
+      // Sector 3: Flanco Inferior Izquierdo (Cuadrante Suroeste)
+      {
+        minX: minX + 20, maxX: Math.min(arenaCenterX - 35, minX + (maxX - minX) * 0.40),
+        minY: Math.max(arenaCenterY + 35, maxY - (maxY - minY) * 0.32), maxY: maxY - 20
+      },
+      // Sector 4: Flanco Central Desplazado
+      {
+        minX: minX + (maxX - minX) * 0.30, maxX: maxX - (maxX - minX) * 0.30,
+        minY: arenaCenterY - 60, maxY: arenaCenterY + 60
+      }
+    ];
+
+    // Asignación de materiales canónicos con composición física real
+    const materialPool: PlanetMaterialType[] = ['ice', 'rock', 'iron', 'gas', 'neutron'];
+    const pickMaterial = (radius: number, index: number): PlanetMaterialType => {
+      // Garantizar que los planetas 0 y 1 (donde nacen las naves) sean sólidos (hielo, roca, hierro o neutron)
+      if (index === 0 || index === 1) {
+        const solids: PlanetMaterialType[] = ['rock', 'ice', 'iron', 'neutron'];
+        return solids[Math.floor(rng() * solids.length)];
+      }
+      if (radius >= 48 && rng() < 0.6) return 'gas';
+      return materialPool[Math.floor(rng() * materialPool.length)];
+    };
+
+    // 1. Sembrado primario en Sector 0 (Top-Left) y Sector 1 (Bottom-Right)
+    // Garantiza planetas en esquinas opuestas para P1 y P2 con distancia >= 55% de la diagonal
+    const canvasDiagonal = Math.hypot(w, h);
+    const minRequiredShipDistance = canvasDiagonal * 0.55;
+
+    // Sembrar P1 en Sector 0 (Top-Left)
+    const sec0 = sectors[0];
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const rad = Math.floor(28 + rng() * 20); // 28px a 48px
+      const cx = sec0.minX + rng() * (sec0.maxX - sec0.minX);
+      const cy = sec0.minY + rng() * (sec0.maxY - sec0.minY);
+      if (isValidSample(cx, cy, rad)) {
+        samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+        break;
+      }
+    }
+
+    // Sembrar P2 en Sector 1 (Bottom-Right) con holgura diagonal garantizada
+    const sec1 = sectors[1];
+    let p2Placed = false;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const rad = Math.floor(28 + rng() * 20);
+      const cx = sec1.minX + rng() * (sec1.maxX - sec1.minX);
+      const cy = sec1.minY + rng() * (sec1.maxY - sec1.minY);
+      if (isValidSample(cx, cy, rad)) {
+        const centerDist = Math.hypot(cx - samples[0].x, cy - samples[0].y);
+        if (centerDist >= minRequiredShipDistance + 60) {
+          samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+          p2Placed = true;
+          break;
+        }
+      }
+    }
+    if (!p2Placed) {
+      for (let attempt = 0; attempt < 80; attempt++) {
+        const rad = Math.floor(28 + rng() * 20);
+        const cx = sec1.minX + rng() * (sec1.maxX - sec1.minX);
+        const cy = sec1.minY + rng() * (sec1.maxY - sec1.minY);
+        if (isValidSample(cx, cy, rad)) {
+          samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+          break;
+        }
+      }
+    }
+
+    // 2. Muestreo de Poisson Disk anular y por sectores para completar la distribución equitativa
+    const activeQueue = [...samples];
+    const candidateRadii = [32, 36, 42, 28, 48, 38];
+
+    // Iteración de Poisson mientras haya puntos activos y no alcancemos la meta
+    while (activeQueue.length > 0 && samples.length < targetPlanetCount) {
+      const activeIdx = Math.floor(rng() * activeQueue.length);
+      const active = activeQueue[activeIdx];
+      let foundNeighbor = false;
+
+      // Bridson annular candidate sampling: k = 30 intentos alrededor del punto activo
+      for (let k = 0; k < 30; k++) {
+        const rad = candidateRadii[Math.floor(rng() * candidateRadii.length)];
+        const minD = active.radius + rad + minEdgeDistance;
+        const maxD = minD + 180;
+        const dist = minD + rng() * (maxD - minD);
+        const theta = rng() * Math.PI * 2;
+        const cx = active.x + Math.cos(theta) * dist;
+        const cy = active.y + Math.sin(theta) * dist;
+
+        if (isValidSample(cx, cy, rad)) {
+          const newSample = { x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) };
+          samples.push(newSample);
+          activeQueue.push(newSample);
+          foundNeighbor = true;
           break;
         }
       }
 
-      // Si no cabe tras 100 intentos, se descarta para evitar hacinamiento
-      if (!placed) {
-        continue;
+      if (!foundNeighbor) {
+        // Remover del activeQueue si no se pudieron generar más candidatos viables
+        activeQueue.splice(activeIdx, 1);
       }
+    }
 
-      // Asignación de los 5 materiales canónicos con composición física real:
-      // Hielo (0.5x dens, 0.4x dur), Roca (1.0x/1.0x), Hierro (2.2x/2.8x), Gas (0.7x/fluido), Neutrón (3.5x/4.0x)
-      const materialPool: PlanetMaterialType[] = [
-        'ice', 'ice',
-        'rock', 'rock', 'rock',
-        'iron', 'iron',
-        'gas',
-        'neutron'
-      ];
-      let chosenType: PlanetMaterialType;
-      if (radius >= 52 && rng() < 0.65) {
-        chosenType = rng() < 0.6 ? 'gas' : 'iron';
-      } else {
-        chosenType = materialPool[Math.floor(rng() * materialPool.length)];
+    // 3. Si la cola anular se agotó antes de alcanzar el mínimo necesario,
+    // sembrar en los sectores intermedios (Flancos Este / Oeste) respetando estrictamente los 120px
+    if (samples.length < targetPlanetCount) {
+      const remainingSectors = [sectors[2], sectors[3], sectors[4]];
+      for (const sec of remainingSectors) {
+        if (samples.length >= targetPlanetCount) break;
+        for (let attempt = 0; attempt < 80; attempt++) {
+          const rad = Math.floor(28 + rng() * 20);
+          const cx = sec.minX + rng() * (sec.maxX - sec.minX);
+          const cy = sec.minY + rng() * (sec.maxY - sec.minY);
+          if (isValidSample(cx, cy, rad)) {
+            samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+            break;
+          }
+        }
       }
+    }
 
-      const material = PLANET_MATERIALS[chosenType];
-      // Gravedad dinámica: Masa = Radio^2 * Densidad_Material * Masa_Base
-      const baseMass = Math.max(25, Math.round(160 * Math.pow(radius / 45, 2) * material.density));
+    // Asegurar siempre un mínimo estricto de 3 planetas (o 4 para 3 jugadores)
+    const absoluteMinPlanets = this.gameConfig.playerCount >= 3 ? 4 : 3;
+    if (samples.length < absoluteMinPlanets) {
+      // Búsqueda de cuadrícula fina para encontrar cualquier hueco legal con separación >= 120px
+      for (let cy = minY + 40; cy <= maxY - 40 && samples.length < absoluteMinPlanets; cy += 45) {
+        for (let cx = minX + 40; cx <= maxX - 40 && samples.length < absoluteMinPlanets; cx += 45) {
+          const rad = 28;
+          if (isValidSample(cx, cy, rad)) {
+            samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+          }
+        }
+      }
+    }
+
+    const planetDesignations = [
+      'PLANETA K-9', 'PLANETA TITÁN-IV', 'PLANETA AURA-7',
+      'PLANETA VORTEX-IX', 'PLANETA OMEGA-2', 'PLANETA ZETA-3',
+      'PLANETA KRONOS-V', 'PLANETA CYGNUS-X', 'PLANETA HYDRA-1'
+    ];
+
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      const material = PLANET_MATERIALS[s.type];
+      const baseMass = Math.max(25, Math.round(160 * Math.pow(s.radius / 45, 2) * material.density));
       const planetCanvas = generatePlanetCanvas({
-        type: chosenType,
-        radius,
+        type: s.type,
+        radius: s.radius,
         seed: Math.floor(rng() * 100000)
       });
-
-      const planetDesignations = ['PLANETA K-9', 'PLANETA TITÁN-IV', 'PLANETA AURA-7', 'PLANETA VORTEX-IX', 'PLANETA OMEGA-2', 'PLANETA ZETA-3', 'PLANETA KRONOS-V'];
-      const pName = planetDesignations[this.planets.length % planetDesignations.length];
+      const pName = planetDesignations[i % planetDesignations.length];
 
       this.planets.push({
-        id: this.planets.length + 1,
+        id: i + 1,
         name: pName,
-        x: bestX,
-        y: bestY,
-        radius,
-        initialRadius: radius,
+        x: s.x,
+        y: s.y,
+        radius: s.radius,
+        initialRadius: s.radius,
         baseMass,
         currentMass: baseMass,
-        type: chosenType,
+        type: s.type,
         material,
         canvas: planetCanvas,
         ctx: planetCanvas.getContext('2d', { willReadFrequently: true })!,
-        gravitonInvertedUntil: 0
-      });
-    }
-
-    // Asegurar entre 3 y 5 planetas bien repartidos a lo largo de toda la columna vertical
-    const minNeededPlanets = this.gameConfig.playerCount >= 3 ? 5 : 3;
-    const fallbackDesignations = ['PLANETA CYGNUS-X', 'PLANETA HYDRA-1', 'PLANETA ORION-8'];
-    while (this.planets.length < minNeededPlanets) {
-      const idx = this.planets.length;
-      const fallbackRadius = 32;
-      const fx = Math.round(w * (idx % 2 === 0 ? 0.28 : 0.72));
-      const fy = Math.round(180 + idx * ((h - 360) / (minNeededPlanets - 1)));
-      const fallbackType: PlanetMaterialType = (idx % 2 === 0) ? 'ice' : 'iron';
-      const fallbackMaterial = PLANET_MATERIALS[fallbackType];
-      const fallbackBaseMass = Math.max(25, Math.round(160 * Math.pow(fallbackRadius / 45, 2) * fallbackMaterial.density));
-      const pCanvas = generatePlanetCanvas({ type: fallbackType, radius: fallbackRadius, seed: 101 * (idx + 1) });
-      const fName = fallbackDesignations[idx % fallbackDesignations.length] || `PLANETA S-${idx + 1}`;
-      this.planets.push({
-        id: this.planets.length + 1,
-        name: fName,
-        x: fx,
-        y: fy,
-        radius: fallbackRadius,
-        initialRadius: fallbackRadius,
-        baseMass: fallbackBaseMass,
-        currentMass: fallbackBaseMass,
-        type: fallbackType,
-        material: fallbackMaterial,
-        canvas: pCanvas,
-        ctx: pCanvas.getContext('2d', { willReadFrequently: true })!,
         gravitonInvertedUntil: 0
       });
     }
@@ -637,27 +748,85 @@ export class WarHeadsEngine {
       }
     }
 
-    // 3. Place 1 to 3 Ships on distinct, vertically spaced solid planets (NUNCA en gas)
+    // 3. Spawning Táctico de Naves en Cuadrantes Opuestos (P1 Top-Left, P2 Bottom-Right)
+    // - P1 forzado al Cuadrante Superior Izquierdo (Top-Left: x < w/2, y < h/2)
+    // - P2 forzado al Cuadrante Inferior Derecho (Bottom-Right: x > w/2, y > h/2)
+    // - Planetas distintos garantizados (NUNCA en gigantes gaseosos)
+    // - Distancia lineal mínima garantizada de al menos el 55% de la diagonal del canvas
     const count = this.gameConfig.playerCount;
     const solidPlanets = this.planets.filter(p => !p.material.isGas);
-    const candidatePlanets = solidPlanets.length >= count ? solidPlanets : this.planets;
-    const sortedPlanets = [...candidatePlanets].sort((a, b) => a.y - b.y);
+    const candidatePlanets = solidPlanets.length >= 2 ? solidPlanets : this.planets;
 
-    let chosenPlanets: Planet[] = [];
-    if (count === 1 || count === 2) {
-      // Extremos opuestos del cuadrante orbital (Top vs Bottom)
-      // Con planetas deshabitados en medio: NUNCA en planetas adyacentes
-      chosenPlanets = [sortedPlanets[0], sortedPlanets[sortedPlanets.length - 1]];
-    } else {
-      // 3 Jugadores: NUNCA en planetas adyacentes (índices 0, 2, 4 si hay 5 planetas)
-      if (sortedPlanets.length >= 5) {
-        chosenPlanets = [sortedPlanets[0], sortedPlanets[2], sortedPlanets[4]];
-      } else if (sortedPlanets.length >= 4) {
-        chosenPlanets = [sortedPlanets[0], sortedPlanets[2], sortedPlanets[3]];
-      } else {
-        chosenPlanets = [sortedPlanets[0], sortedPlanets[1], sortedPlanets[2]];
+    // 1. Planeta para Jugador 1: Cuadrante Superior Izquierdo (Top-Left)
+    const topLeftPlanets = candidatePlanets.filter(p => p.x < arenaCenterX && p.y < arenaCenterY);
+    let p1Planet = topLeftPlanets.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y))[0];
+    if (!p1Planet) {
+      p1Planet = candidatePlanets.slice().sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y))[0];
+    }
+
+    // 2. Planeta para Jugador 2: Cuadrante Inferior Derecho (Bottom-Right), estrictamente DISTINTO a P1
+    const bottomRightPlanets = candidatePlanets.filter(p => p.id !== p1Planet.id && p.x > arenaCenterX && p.y > arenaCenterY);
+    let p2Planet = bottomRightPlanets.slice().sort((a, b) => (b.x + b.y) - (a.x + a.y))[0];
+    if (!p2Planet) {
+      p2Planet = candidatePlanets.filter(p => p.id !== p1Planet.id).slice().sort((a, b) => Math.hypot(w - a.x, h - a.y) - Math.hypot(w - b.x, h - b.y))[0] || candidatePlanets[1];
+    }
+
+    // 3. Planeta para Jugador 3 (si hay 3 jugadores): planeta distinto a P1 y P2
+    let p3Planet: Planet | undefined;
+    if (count >= 3) {
+      p3Planet = candidatePlanets.find(p => p.id !== p1Planet.id && p.id !== p2Planet.id) || candidatePlanets[0];
+    }
+
+    // Optimización de ángulos orbitales para P1 y P2:
+    // Asegura que P1 quede en Top-Left, P2 en Bottom-Right, y dist(P1, P2) >= 55% diagonal
+    let sAngle1 = Math.PI * 0.25;
+    let sAngle2 = -Math.PI * 0.75;
+    let bestScore = -Infinity;
+
+    for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
+      const x1 = p1Planet.x + Math.cos(a1) * (p1Planet.radius + 10);
+      const y1 = p1Planet.y + Math.sin(a1) * (p1Planet.radius + 10);
+      if (x1 >= arenaCenterX || y1 >= arenaCenterY) continue; // P1 en cuadrante superior izquierdo
+
+      for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
+        const x2 = p2Planet.x + Math.cos(a2) * (p2Planet.radius + 10);
+        const y2 = p2Planet.y + Math.sin(a2) * (p2Planet.radius + 10);
+        if (x2 <= arenaCenterX || y2 <= arenaCenterY) continue; // P2 en cuadrante inferior derecho
+
+        const d = Math.hypot(x2 - x1, y2 - y1);
+        if (d >= minRequiredShipDistance + 1.0) {
+          const inward1 = Math.cos(a1 - Math.atan2(arenaCenterY - p1Planet.y, arenaCenterX - p1Planet.x));
+          const inward2 = Math.cos(a2 - Math.atan2(arenaCenterY - p2Planet.y, arenaCenterX - p2Planet.x));
+          const score = d + (inward1 + inward2) * 50;
+          if (score > bestScore) {
+            bestScore = score;
+            sAngle1 = a1;
+            sAngle2 = a2;
+          }
+        }
       }
     }
+
+    // Fallback de seguridad: maximizar distancia lineal garantizada
+    if (bestScore === -Infinity) {
+      let maxDistFound = 0;
+      for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
+        const x1 = p1Planet.x + Math.cos(a1) * (p1Planet.radius + 10);
+        const y1 = p1Planet.y + Math.sin(a1) * (p1Planet.radius + 10);
+        for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
+          const x2 = p2Planet.x + Math.cos(a2) * (p2Planet.radius + 10);
+          const y2 = p2Planet.y + Math.sin(a2) * (p2Planet.radius + 10);
+          const d = Math.hypot(x2 - x1, y2 - y1);
+          if (d > maxDistFound) {
+            maxDistFound = d;
+            sAngle1 = a1;
+            sAngle2 = a2;
+          }
+        }
+      }
+    }
+
+    const sAngle3 = (rng() > 0.5 ? 0.05 : Math.PI - 0.05) + (rng() - 0.5) * 0.25;
 
     const shipConfigs = [
       { id: 1 as PlayerId, color: '#38bdf8', name: 'USS ENTERPRISE (P1)', isAI: false },
@@ -669,32 +838,22 @@ export class WarHeadsEngine {
 
     this.ships = [];
     for (let i = 0; i < activeCount; i++) {
-      const pl = chosenPlanets[i % chosenPlanets.length];
-      
-      let sAngle = -Math.PI / 2;
+      let pl: Planet;
+      let sAngle: number;
+
       if (i === 0) {
-        // Planeta superior: la nave mira hacia abajo hacia el centro de combate
-        sAngle = Math.PI * 0.5 + (rng() - 0.5) * 0.35;
+        pl = p1Planet;
+        sAngle = sAngle1;
       } else if (i === 1) {
-        // Planeta inferior: la nave mira hacia arriba
-        sAngle = -Math.PI * 0.5 + (rng() - 0.5) * 0.35;
+        pl = p2Planet;
+        sAngle = sAngle2;
       } else {
-        // Planeta intermedio: lateral
-        sAngle = (rng() > 0.5 ? 0.05 : Math.PI - 0.05) + (rng() - 0.5) * 0.25;
+        pl = p3Planet || candidatePlanets[2 % candidatePlanets.length];
+        sAngle = sAngle3;
       }
 
-      let sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
-      let sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
-
-      // Verificación estricta: distancia lineal garantizada >= 450px con todas las naves existentes
-      for (const prevShip of this.ships) {
-        const d = Math.hypot(sx - prevShip.x, sy - prevShip.y);
-        if (d < 450) {
-          sAngle += Math.PI; // Rotar 180° al hemisferio opuesto para máxima separación
-          sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
-          sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
-        }
-      }
+      const sx = Math.round(pl.x + Math.cos(sAngle) * (pl.radius + 10));
+      const sy = Math.round(pl.y + Math.sin(sAngle) * (pl.radius + 10));
 
       // Aim towards arena center
       const targetX = this.width / 2;

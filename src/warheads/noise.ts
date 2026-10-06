@@ -326,10 +326,15 @@ export function generatePlanetCanvas(config: PlanetTextureConfig): HTMLCanvasEle
         b = Math.floor(n * 160);
       }
 
-      // Apply light & spherical projection
-      data[idx] = Math.min(255, Math.floor(r * light));
-      data[idx + 1] = Math.min(255, Math.floor(g * light));
-      data[idx + 2] = Math.min(255, Math.floor(b * light));
+      // Apply light & spherical projection with baked atmospheric rim haze
+      const rimHaze = Math.pow(1.0 - nz, 4.0) * 0.3;
+      const glowR = type === 'ice' ? 56 : type === 'iron' ? 245 : type === 'gas' ? 59 : type === 'neutron' ? 192 : 217;
+      const glowG = type === 'ice' ? 189 : type === 'iron' ? 158 : type === 'gas' ? 130 : type === 'neutron' ? 132 : 119;
+      const glowB = type === 'ice' ? 248 : type === 'iron' ? 11 : type === 'gas' ? 246 : type === 'neutron' ? 252 : 6;
+
+      data[idx] = Math.min(255, Math.floor(r * light + glowR * rimHaze));
+      data[idx + 1] = Math.min(255, Math.floor(g * light + glowG * rimHaze));
+      data[idx + 2] = Math.min(255, Math.floor(b * light + glowB * rimHaze));
       data[idx + 3] = 255;
     }
   }
@@ -339,46 +344,15 @@ export function generatePlanetCanvas(config: PlanetTextureConfig): HTMLCanvasEle
 }
 
 /**
- * Draws atmospheric glow around planet on main canvas
+ * Atmosphere is baked directly into the planet OffscreenCanvas to guarantee
+ * 100% clean transparency when carved with destination-out (zero ghost shadows).
  */
 export function drawAtmosphereGlow(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  radius: number,
-  type: PlanetType
+  _ctx: CanvasRenderingContext2D,
+  _x: number,
+  _y: number,
+  _radius: number,
+  _type: PlanetType
 ): void {
-  const glowRadius = radius * 1.28;
-  const grad = ctx.createRadialGradient(x, y, radius * 0.94, x, y, glowRadius);
-
-  let colorInner = 'rgba(100, 180, 255, 0.4)';
-  let colorOuter = 'rgba(50, 130, 255, 0)';
-
-  if (type === 'ice') {
-    colorInner = 'rgba(56, 189, 248, 0.55)';
-    colorOuter = 'rgba(14, 165, 233, 0)';
-  } else if (type === 'rock' || type === 'rocky' || type === 'volcanic') {
-    colorInner = 'rgba(217, 119, 6, 0.35)';
-    colorOuter = 'rgba(180, 83, 9, 0)';
-  } else if (type === 'iron') {
-    colorInner = 'rgba(245, 158, 11, 0.45)';
-    colorOuter = 'rgba(217, 119, 6, 0)';
-  } else if (type === 'gas' || type === 'gas_giant') {
-    colorInner = 'rgba(251, 146, 60, 0.48)';
-    colorOuter = 'rgba(234, 88, 12, 0)';
-  } else if (type === 'neutron') {
-    colorInner = 'rgba(192, 132, 252, 0.65)';
-    colorOuter = 'rgba(126, 34, 206, 0)';
-  }
-
-  grad.addColorStop(0, colorInner);
-  grad.addColorStop(1, colorOuter);
-
-  ctx.save();
-  ctx.globalCompositeOperation = 'screen';
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(x, y, glowRadius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  // No-op: all lighting and atmosphere is pre-baked in the OffscreenCanvas
 }
