@@ -5,7 +5,13 @@
  * Historical Credit & Coin Mining Economy + 3 Distinct Vector Ship Models
  */
 
-import { generatePlanetCanvas, drawAtmosphereGlow, PlanetType } from './noise';
+import {
+  generatePlanetCanvas,
+  PlanetType,
+  PlanetMaterialType,
+  PlanetMaterialInfo,
+  PLANET_MATERIALS
+} from './noise';
 import { WeaponDef, WEAPON_CATALOG } from './weapons';
 import { sound } from './audio';
 
@@ -39,8 +45,8 @@ export const SHIELD_CATALOG: ShieldDef[] = [
     id: 'deflector',
     name: 'Deflector Estándar',
     price: 0,
-    description: 'Absorbe 300 HP de explosiones antes de caer.',
-    effect: 'Absorbe 300 HP de daño',
+    description: 'Absorbe 800 SP (el escudo absorbe el 70% del daño antes de tocar el casco).',
+    effect: 'Absorbe 70% del daño (800 SP)',
     color: '#38bdf8'
   },
   {
@@ -87,8 +93,8 @@ export const SHIELD_CATALOG: ShieldDef[] = [
     id: 'bastion',
     name: 'Bastión Pesado',
     price: 120,
-    description: '+800 SP de protección masiva contra ondas de choque, pero anula el salto en ese turno.',
-    effect: '+800 SP contra ondas de choque',
+    description: '+1000 SP de protección masiva (+1800 SP total); inmoviliza a la nave ese turno.',
+    effect: '+1000 SP de blindaje colosal',
     color: '#f59e0b'
   },
   {
@@ -104,13 +110,15 @@ export const SHIELD_CATALOG: ShieldDef[] = [
 
 export interface Planet {
   id: number;
+  name: string;
   x: number;
   y: number;
   radius: number;
   initialRadius: number;
   baseMass: number;
   currentMass: number;
-  type: PlanetType;
+  type: PlanetMaterialType;
+  material: PlanetMaterialInfo;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   gravitonInvertedUntil: number; // timestamp
@@ -145,6 +153,16 @@ export interface Ship {
   lastHitTime?: number;
 }
 
+
+export interface FuelGem {
+  id: number;
+  x: number;
+  y: number;
+  collected: boolean;
+  radius: number;
+  spinOffset: number;
+}
+
 export interface Coin {
   id: number;
   x: number;
@@ -168,6 +186,7 @@ export interface Projectile {
   maxLife: number;
   trail: { x: number; y: number; alpha: number }[];
   recordedTrail?: { x: number; y: number }[];
+  planetsCircled?: Set<number>;
   bouncesLeft?: number;
   ghostPhasePassed?: boolean;
   isBorer?: boolean;
@@ -207,6 +226,19 @@ export interface NapalmFire {
   maxLife: number;
 }
 
+export interface FloatingDamageNumber {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  text: string;
+  color: string;
+  alpha: number;
+  life: number;
+  maxLife: number;
+}
+
 export interface GameConfig {
   mode: 'vs_ai' | 'pass_play' | 'online';
   playerCount: 1 | 2 | 3;
@@ -233,6 +265,13 @@ export class WarHeadsEngine {
   public particles: Particle[] = [];
   public singularities: Singularity[] = [];
   public napalms: NapalmFire[] = [];
+  public fuelGems: FuelGem[] = [];
+  public damageNumbers: FloatingDamageNumber[] = [];
+  public selectedPlanetId: number | null = null;
+  public scale: number = 1.0;
+  public firstBloodClaimed: boolean = false;
+  public hasConfiguredDefense: Record<PlayerId, boolean> = { 1: false, 2: false, 3: false };
+  public onTacticalBonus?: (text: string, color: string) => void;
 
   public currentTurn: PlayerId = 1;
   public isSimulating = false;
@@ -253,7 +292,69 @@ export class WarHeadsEngine {
   public onStateUpdate?: () => void;
   public onGameOver?: (winner: PlayerId | 'draw') => void;
   public onCoinCollected?: (playerId: PlayerId, amount: number) => void;
-  public lastShotTrails: Record<PlayerId, { x: number; y: number }[]> = { 1: [], 2: [], 3: [] };
+
+  // Tactical Manual Zoom & Pan System (100% Player Controlled, 0.6x to 1.6x)
+  public userZoom: number = 1.0;
+  public panX: number = 0;
+  public panY: number = 0;
+
+  public setZoom(zoom: number) {
+    this.userZoom = Math.max(0.6, Math.min(1.6, Math.round(zoom * 100) / 100));
+    this.onStateUpdate?.();
+  }
+
+  public zoomIn(delta: number = 0.15) {
+    this.setZoom(this.userZoom + delta);
+  }
+
+  public zoomOut(delta: number = 0.15) {
+    this.setZoom(this.userZoom - delta);
+  }
+
+  public resetZoom() {
+    this.userZoom = 1.0;
+    this.panX = 0;
+    this.panY = 0;
+    this.onStateUpdate?.();
+  }
+
+  public screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+    const effectiveScale = this.scale * this.userZoom;
+    const wx = (clientX - (cx + this.panX)) / effectiveScale + this.width / 2;
+    const wy = (clientY - (cy + this.panY)) / effectiveScale + this.height / 2;
+    return { x: wx, y: wy };
+  }
+
+  public worldToScreen(worldX: number, worldY: number): { x: number; y: number } {
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+    const effectiveScale = this.scale * this.userZoom;
+    const sx = cx + this.panX + (worldX - this.width / 2) * effectiveScale;
+    const sy = cy + this.panY + (worldY - this.height / 2) * effectiveScale;
+    return { x: sx, y: sy };
+  }
+
+  public spawnDamageNumber(x: number, y: number, text: string, color: string): void {
+    this.damageNumbers.push({
+      id: Math.random(),
+      x: x + (Math.random() - 0.5) * 4,
+      y: y,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: -0.9 - Math.random() * 0.3,
+      text,
+      color,
+      alpha: 1.0,
+      life: 0,
+      maxLife: 48
+    });
+  }
+
+  public selectPlanet(id: number | null): void {
+    this.selectedPlanetId = id;
+    this.onStateUpdate?.();
+  }
 
   private stars: { x: number; y: number; size: number; alpha: number; twinkleSpeed: number }[] = [];
   private lastTime = 0;
@@ -262,10 +363,13 @@ export class WarHeadsEngine {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.width = canvas.clientWidth || canvas.width || 720;
-    this.height = canvas.clientHeight || canvas.height || 1280;
-    this.canvas.width = this.width;
-    this.canvas.height = this.height;
+    const clientW = canvas.clientWidth || 390;
+    const clientH = canvas.clientHeight || 650;
+    this.scale = clientW / 900;
+    this.width = 900;
+    this.height = Math.round(clientH / this.scale);
+    this.canvas.width = clientW;
+    this.canvas.height = clientH;
     this.ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
     this.initStars();
@@ -273,38 +377,16 @@ export class WarHeadsEngine {
     this.startLoop();
   }
 
-  public resize(w: number, h: number) {
-    if (w <= 0 || h <= 0) return;
-    const oldW = this.width;
-    const oldH = this.height;
-    if (Math.abs(oldW - w) < 2 && Math.abs(oldH - h) < 2) return;
-
-    this.width = w;
-    this.height = h;
-    this.canvas.width = w;
-    this.canvas.height = h;
-
-    this.initStars();
-
-    if (oldW > 0 && oldH > 0 && this.planets.length > 0) {
-      const scaleX = w / oldW;
-      const scaleY = h / oldH;
-      for (const pl of this.planets) {
-        pl.x = Math.max(pl.radius + 40, Math.min(w - pl.radius - 40, pl.x * scaleX));
-        pl.y = Math.max(pl.radius + 40, Math.min(h - pl.radius - 40, pl.y * scaleY));
-      }
-      for (const sh of this.ships) {
-        if (!sh.isAirborne) {
-          const pl = this.planets.find(p => p.id === sh.planetId);
-          if (pl) {
-            sh.x = pl.x + Math.cos(sh.surfaceAngle) * (pl.radius + 10);
-            sh.y = pl.y + Math.sin(sh.surfaceAngle) * (pl.radius + 10);
-          }
-        } else {
-          sh.x = Math.max(10, Math.min(w - 10, sh.x * scaleX));
-          sh.y = Math.max(10, Math.min(h - 10, sh.y * scaleY));
-        }
-      }
+  public resize(clientW: number, clientH: number) {
+    if (clientW <= 0 || clientH <= 0) return;
+    const newScale = clientW / 900;
+    const newHeight = Math.round(clientH / newScale);
+    this.scale = newScale;
+    this.canvas.width = clientW;
+    this.canvas.height = clientH;
+    if (Math.abs(this.height - newHeight) > 12) {
+      this.height = newHeight;
+      this.initStars();
     }
   }
 
@@ -334,10 +416,14 @@ export class WarHeadsEngine {
     this.particles = [];
     this.singularities = [];
     this.napalms = [];
+    this.damageNumbers = [];
+    this.selectedPlanetId = null;
     this.roundWinner = null;
     this.isSimulating = false;
     this.currentTurn = 1;
     this.aiThinkTimer = 0;
+    this.firstBloodClaimed = false;
+    this.hasConfiguredDefense = { 1: false, 2: false, 3: false };
 
     const actualSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000);
     this.currentSeed = actualSeed;
@@ -346,38 +432,41 @@ export class WarHeadsEngine {
     const w = this.width;
     const h = this.height;
 
-    // 1. Generación procedural con descongestión orbital: 3 a 4 planetas bien repartidos
-    // Radios reducidos: 24px a 65px (máximo 70px) con distancia mínima garantizada (radioA + radioB + 90)
+    // 1. Escala espacial amplia y descongestión orbital:
+    // Radios entre 28px y 55px (máximo 60px para el planeta gigante central)
+    // Distancia mínima garantizada: distancia >= radioA + radioB + 110px
     this.planets = [];
-    const targetPlanetCount = Math.floor(rng() * 2) + 3; // 3 a 4 planetas
-    const planetTypes: PlanetType[] = ['rocky', 'gas_giant', 'earth', 'volcanic'];
+    const targetPlanetCount = this.gameConfig.playerCount >= 3 ? 5 : (Math.floor(rng() * 2) + 3); // 3 a 4 planetas (1-2 jugadores), 5 para 3 jugadores
 
-    const vTop = 60;
-    const vBottom = h - 60;
+    const vTop = 90;
+    const vBottom = h - 90;
     const vSlice = (vBottom - vTop) / targetPlanetCount;
 
     for (let i = 0; i < targetPlanetCount; i++) {
-      // Radios reducidos entre 24px (lunas pequeñas) y 65px (planetas medianos/grandes)
-      const radius = Math.floor(24 + rng() * 41); // 24px a 65px
+      // Radios moderados: entre 28px y 55px (máximo 60px para el central)
+      let radius = Math.floor(28 + rng() * 27); // 28px a 54px
+      if (i === 1 && targetPlanetCount >= 3) {
+        radius = Math.min(60, radius + 8); // Gigante central hasta 60px
+      }
       const sliceMinY = vTop + i * vSlice + radius;
       const sliceMaxY = vTop + (i + 1) * vSlice - radius;
 
-      const minX = radius + 40;
-      const maxX = Math.max(minX + 20, w - radius - 40);
+      const minX = radius + 60;
+      const maxX = Math.max(minX + 30, w - radius - 60);
 
       let bestX = 0;
       let bestY = 0;
       let placed = false;
 
       for (let attempt = 0; attempt < 100; attempt++) {
-        const sideOffset = (i % 2 === 0) ? (rng() * 0.45) : (0.55 + rng() * 0.45);
+        const sideOffset = (i % 2 === 0) ? (0.15 + rng() * 0.35) : (0.50 + rng() * 0.35);
         const cx = minX + sideOffset * (maxX - minX);
         const cy = sliceMinY + rng() * Math.max(10, sliceMaxY - sliceMinY);
 
         let overlap = false;
         for (const existing of this.planets) {
-          // Distancia mínima garantizada entre bordes: distancia(centroA, centroB) >= radioA + radioB + 90
-          const minDist = radius + existing.radius + 90;
+          // Distancia mínima garantizada: distancia >= radioA + radioB + 110px
+          const minDist = radius + existing.radius + 110;
           if (Math.hypot(cx - existing.x, cy - existing.y) < minDist) {
             overlap = true;
             break;
@@ -392,50 +481,80 @@ export class WarHeadsEngine {
         }
       }
 
-      // Si un planeta no cabe sin tocar a otro tras 100 intentos, se descarta para mantener el espacio limpio
+      // Si no cabe tras 100 intentos, se descarta para evitar hacinamiento
       if (!placed) {
         continue;
       }
 
-      const type = planetTypes[Math.floor(rng() * planetTypes.length)];
-      const baseMass = Math.max(25, Math.round(140 * Math.pow(radius / 45, 2)));
+      // Asignación de los 5 materiales canónicos con composición física real:
+      // Hielo (0.5x dens, 0.4x dur), Roca (1.0x/1.0x), Hierro (2.2x/2.8x), Gas (0.7x/fluido), Neutrón (3.5x/4.0x)
+      const materialPool: PlanetMaterialType[] = [
+        'ice', 'ice',
+        'rock', 'rock', 'rock',
+        'iron', 'iron',
+        'gas',
+        'neutron'
+      ];
+      let chosenType: PlanetMaterialType;
+      if (radius >= 52 && rng() < 0.65) {
+        chosenType = rng() < 0.6 ? 'gas' : 'iron';
+      } else {
+        chosenType = materialPool[Math.floor(rng() * materialPool.length)];
+      }
+
+      const material = PLANET_MATERIALS[chosenType];
+      // Gravedad dinámica: Masa = Radio^2 * Densidad_Material * Masa_Base
+      const baseMass = Math.max(25, Math.round(160 * Math.pow(radius / 45, 2) * material.density));
       const planetCanvas = generatePlanetCanvas({
-        type,
+        type: chosenType,
         radius,
         seed: Math.floor(rng() * 100000)
       });
 
+      const planetDesignations = ['PLANETA K-9', 'PLANETA TITÁN-IV', 'PLANETA AURA-7', 'PLANETA VORTEX-IX', 'PLANETA OMEGA-2', 'PLANETA ZETA-3', 'PLANETA KRONOS-V'];
+      const pName = planetDesignations[this.planets.length % planetDesignations.length];
+
       this.planets.push({
         id: this.planets.length + 1,
+        name: pName,
         x: bestX,
         y: bestY,
         radius,
         initialRadius: radius,
         baseMass,
         currentMass: baseMass,
-        type,
+        type: chosenType,
+        material,
         canvas: planetCanvas,
         ctx: planetCanvas.getContext('2d', { willReadFrequently: true })!,
         gravitonInvertedUntil: 0
       });
     }
 
-    // Asegurar entre 3 y 4 planetas bien repartidos a lo largo de toda la columna vertical
-    while (this.planets.length < 3) {
+    // Asegurar entre 3 y 5 planetas bien repartidos a lo largo de toda la columna vertical
+    const minNeededPlanets = this.gameConfig.playerCount >= 3 ? 5 : 3;
+    const fallbackDesignations = ['PLANETA CYGNUS-X', 'PLANETA HYDRA-1', 'PLANETA ORION-8'];
+    while (this.planets.length < minNeededPlanets) {
       const idx = this.planets.length;
-      const fallbackRadius = 28;
-      const fx = Math.round(w * (idx % 2 === 0 ? 0.35 : 0.65));
-      const fy = Math.round(110 + idx * ((h - 220) / 2));
-      const pCanvas = generatePlanetCanvas({ type: 'rocky', radius: fallbackRadius, seed: 101 * (idx + 1) });
+      const fallbackRadius = 32;
+      const fx = Math.round(w * (idx % 2 === 0 ? 0.28 : 0.72));
+      const fy = Math.round(180 + idx * ((h - 360) / (minNeededPlanets - 1)));
+      const fallbackType: PlanetMaterialType = (idx % 2 === 0) ? 'ice' : 'iron';
+      const fallbackMaterial = PLANET_MATERIALS[fallbackType];
+      const fallbackBaseMass = Math.max(25, Math.round(160 * Math.pow(fallbackRadius / 45, 2) * fallbackMaterial.density));
+      const pCanvas = generatePlanetCanvas({ type: fallbackType, radius: fallbackRadius, seed: 101 * (idx + 1) });
+      const fName = fallbackDesignations[idx % fallbackDesignations.length] || `PLANETA S-${idx + 1}`;
       this.planets.push({
         id: this.planets.length + 1,
+        name: fName,
         x: fx,
         y: fy,
         radius: fallbackRadius,
         initialRadius: fallbackRadius,
-        baseMass: 90,
-        currentMass: 90,
-        type: 'rocky',
+        baseMass: fallbackBaseMass,
+        currentMass: fallbackBaseMass,
+        type: fallbackType,
+        material: fallbackMaterial,
         canvas: pCanvas,
         ctx: pCanvas.getContext('2d', { willReadFrequently: true })!,
         gravitonInvertedUntil: 0
@@ -491,20 +610,53 @@ export class WarHeadsEngine {
       }
     }
 
-    // 3. Place 1 to 3 Ships on distinct, vertically spaced planets
+
+    // (c) Gemas de Combustible Verde (+30% Fuel) en órbita estratégica
+    this.fuelGems = [];
+    let gemId = 1;
+    const gemCount = Math.floor(3 + rng() * 2); // 3 a 4 cristales
+    for (let g = 0; g < gemCount; g++) {
+      let gx = 80 + rng() * (w - 160);
+      let gy = 120 + rng() * (h - 240);
+      let insidePlanet = false;
+      for (const p of this.planets) {
+        if (Math.hypot(gx - p.x, gy - p.y) < p.radius + 35) {
+          insidePlanet = true;
+          break;
+        }
+      }
+      if (!insidePlanet) {
+        this.fuelGems.push({
+          id: gemId++,
+          x: Math.round(gx),
+          y: Math.round(gy),
+          collected: false,
+          radius: 9,
+          spinOffset: rng() * Math.PI * 2
+        });
+      }
+    }
+
+    // 3. Place 1 to 3 Ships on distinct, vertically spaced solid planets (NUNCA en gas)
     const count = this.gameConfig.playerCount;
-    const sortedPlanets = [...this.planets].sort((a, b) => a.y - b.y);
+    const solidPlanets = this.planets.filter(p => !p.material.isGas);
+    const candidatePlanets = solidPlanets.length >= count ? solidPlanets : this.planets;
+    const sortedPlanets = [...candidatePlanets].sort((a, b) => a.y - b.y);
 
     let chosenPlanets: Planet[] = [];
-    if (count === 1) {
-      // 1 Human vs IA (Top vs Bottom)
-      chosenPlanets = [sortedPlanets[0], sortedPlanets[sortedPlanets.length - 1]];
-    } else if (count === 2) {
+    if (count === 1 || count === 2) {
+      // Extremos opuestos del cuadrante orbital (Top vs Bottom)
+      // Con planetas deshabitados en medio: NUNCA en planetas adyacentes
       chosenPlanets = [sortedPlanets[0], sortedPlanets[sortedPlanets.length - 1]];
     } else {
-      // 3 Players (Top vs Mid vs Bottom)
-      const mid = Math.floor(sortedPlanets.length / 2);
-      chosenPlanets = [sortedPlanets[0], sortedPlanets[mid], sortedPlanets[sortedPlanets.length - 1]];
+      // 3 Jugadores: NUNCA en planetas adyacentes (índices 0, 2, 4 si hay 5 planetas)
+      if (sortedPlanets.length >= 5) {
+        chosenPlanets = [sortedPlanets[0], sortedPlanets[2], sortedPlanets[4]];
+      } else if (sortedPlanets.length >= 4) {
+        chosenPlanets = [sortedPlanets[0], sortedPlanets[2], sortedPlanets[3]];
+      } else {
+        chosenPlanets = [sortedPlanets[0], sortedPlanets[1], sortedPlanets[2]];
+      }
     }
 
     const shipConfigs = [
@@ -521,18 +673,28 @@ export class WarHeadsEngine {
       
       let sAngle = -Math.PI / 2;
       if (i === 0) {
-        // Top planet: ship positioned on bottom/lateral of planet facing into arena
-        sAngle = Math.PI * 0.5 + (rng() - 0.5) * 0.5;
+        // Planeta superior: la nave mira hacia abajo hacia el centro de combate
+        sAngle = Math.PI * 0.5 + (rng() - 0.5) * 0.35;
       } else if (i === 1) {
-        // Bottom planet: ship positioned on top of planet facing upward
-        sAngle = -Math.PI * 0.5 + (rng() - 0.5) * 0.5;
+        // Planeta inferior: la nave mira hacia arriba
+        sAngle = -Math.PI * 0.5 + (rng() - 0.5) * 0.35;
       } else {
-        // Mid planet
-        sAngle = (rng() > 0.5 ? 0.1 : Math.PI - 0.1) + (rng() - 0.5) * 0.4;
+        // Planeta intermedio: lateral
+        sAngle = (rng() > 0.5 ? 0.05 : Math.PI - 0.05) + (rng() - 0.5) * 0.25;
       }
 
-      const sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
-      const sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
+      let sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
+      let sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
+
+      // Verificación estricta: distancia lineal garantizada >= 450px con todas las naves existentes
+      for (const prevShip of this.ships) {
+        const d = Math.hypot(sx - prevShip.x, sy - prevShip.y);
+        if (d < 450) {
+          sAngle += Math.PI; // Rotar 180° al hemisferio opuesto para máxima separación
+          sx = pl.x + Math.cos(sAngle) * (pl.radius + 10);
+          sy = pl.y + Math.sin(sAngle) * (pl.radius + 10);
+        }
+      }
 
       // Aim towards arena center
       const targetX = this.width / 2;
@@ -551,10 +713,10 @@ export class WarHeadsEngine {
         aimAngle: aimDeg,
         power: 65,
         weaponId: 1, // Standard Warhead (Free)
-        hp: 1000,
-        maxHp: 1000,
-        shield: 500,
-        maxShield: 500,
+        hp: 1800,
+        maxHp: 1800,
+        shield: 800,
+        maxShield: 800,
         fuel: 100,
         credits: 300, // Starting Credits
         alive: true,
@@ -595,8 +757,8 @@ export class WarHeadsEngine {
 
     currentShip.shieldType = shieldId;
     if (shieldId === 'bastion') {
-      currentShip.maxShield = 1300;
-      currentShip.shield = Math.min(1300, currentShip.shield + 800);
+      currentShip.maxShield = 1800;
+      currentShip.shield = Math.min(1800, currentShip.shield + 1000);
     }
     sound.playBeep(960, 0.1);
     this.onStateUpdate?.();
@@ -697,6 +859,13 @@ export class WarHeadsEngine {
     const currentShip = this.ships.find(s => s.id === this.currentTurn);
     if (!currentShip || !currentShip.alive || currentShip.isAirborne) return false;
 
+    // Bastión Pesado: +800 SP pero anula el salto en ese turno
+    if (currentShip.shieldType === 'bastion') {
+      sound.playBeep(180, 0.15);
+      this.onTacticalBonus?.('BASTIÓN: SALTO INHIBIDO', '#f59e0b');
+      return false;
+    }
+
     if (currentShip.fuel < 25) {
       sound.playBeep(220, 0.1);
       return false;
@@ -739,36 +908,66 @@ export class WarHeadsEngine {
   }
 
   /**
-   * Destructible Carving: cuts circles/craters in planet OffscreenCanvas with destination-out
+   * Destructible Carving con Dureza Estructural de Material:
+   * Radio_Cráter = R_blast / Dureza_Material
+   * Gas Giants no sufren huecos permanentes, disipan nubes de gas.
    */
-  public carvePlanet(planet: Planet, worldX: number, worldY: number, radius: number): void {
+  public carvePlanet(planet: Planet, worldX: number, worldY: number, blastRadius: number): void {
+    if (planet.material.isGas) {
+      sound.playRockCrumble();
+      for (let d = 0; d < 18; d++) {
+        const dAngle = Math.random() * Math.PI * 2;
+        const dSpeed = Math.random() * 2.8 + 0.6;
+        this.particles.push({
+          x: worldX,
+          y: worldY,
+          vx: Math.cos(dAngle) * dSpeed,
+          vy: Math.sin(dAngle) * dSpeed,
+          life: 0,
+          maxLife: 20 + Math.random() * 15,
+          color: Math.random() < 0.6 ? '#fb923c' : '#fdba74',
+          size: Math.random() * 3.5 + 1.8
+        });
+      }
+      return;
+    }
+
+    // Fórmula de Resistencia al Minado: Radio_Cráter = R_blast / Dureza_Material
+    const effRadius = Math.max(3, Math.round(blastRadius / planet.material.hardness));
+
     const lx = worldX - (planet.x - planet.radius);
     const ly = worldY - (planet.y - planet.radius);
 
     planet.ctx.save();
     planet.ctx.globalCompositeOperation = 'destination-out';
+    planet.ctx.fillStyle = 'rgba(0, 0, 0, 1)';
     planet.ctx.beginPath();
-    planet.ctx.arc(lx, ly, radius, 0, Math.PI * 2);
+    planet.ctx.arc(lx, ly, effRadius, 0, Math.PI * 2);
     planet.ctx.fill();
 
     const fringes = 6;
     for (let i = 0; i < fringes; i++) {
       const fAngle = Math.random() * Math.PI * 2;
-      const fDist = radius * 0.85 + Math.random() * (radius * 0.35);
-      const fRad = radius * 0.28 + Math.random() * (radius * 0.2);
+      const fDist = effRadius * 0.85 + Math.random() * (effRadius * 0.35);
+      const fRad = effRadius * 0.28 + Math.random() * (effRadius * 0.2);
       planet.ctx.beginPath();
       planet.ctx.arc(lx + Math.cos(fAngle) * fDist, ly + Math.sin(fAngle) * fDist, fRad, 0, Math.PI * 2);
       planet.ctx.fill();
     }
     planet.ctx.restore();
 
-    const massReduction = Math.min(planet.currentMass * 0.45, (radius / planet.initialRadius) * 25);
+    const massReduction = Math.min(planet.currentMass * 0.45, (effRadius / planet.initialRadius) * 25);
     planet.currentMass = Math.max(20, planet.currentMass - massReduction);
 
     sound.playRockCrumble();
 
-    // Spawn rock debris particles
-    const debrisCount = Math.floor(radius * 0.7);
+    // Spawn debris particles according to material composition
+    const debrisCount = Math.floor(effRadius * 0.8);
+    let debrisColor = '#a8a29e';
+    if (planet.type === 'ice') debrisColor = Math.random() < 0.5 ? '#e0f2fe' : '#38bdf8';
+    else if (planet.type === 'iron') debrisColor = Math.random() < 0.5 ? '#fbbf24' : '#71717a';
+    else if (planet.type === 'neutron') debrisColor = Math.random() < 0.5 ? '#c084fc' : '#a855f7';
+
     for (let d = 0; d < debrisCount; d++) {
       const dAngle = Math.random() * Math.PI * 2;
       const dSpeed = Math.random() * 3.5 + 0.8;
@@ -778,8 +977,8 @@ export class WarHeadsEngine {
         vx: Math.cos(dAngle) * dSpeed,
         vy: Math.sin(dAngle) * dSpeed,
         life: 0,
-        maxLife: 35 + Math.random() * 30,
-        color: planet.type === 'volcanic' ? '#ea580c' : planet.type === 'earth' ? '#475569' : '#a8a29e',
+        maxLife: 30 + Math.random() * 25,
+        color: debrisColor,
         size: Math.random() * 3.2 + 1.2
       });
     }
@@ -825,6 +1024,11 @@ export class WarHeadsEngine {
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist > planet.radius) return false;
 
+    // Los Gigantes Gaseosos son fluidos: solo su diminuto núcleo central (< 12px) es sólido
+    if (planet.material.isGas) {
+      return dist < 12;
+    }
+
     const lx = Math.floor(wx - (planet.x - planet.radius));
     const ly = Math.floor(wy - (planet.y - planet.radius));
 
@@ -837,13 +1041,10 @@ export class WarHeadsEngine {
     const w = proj.weapon;
     sound.playExplosion(w.craterRadius, w.category === 'exotic');
 
-    if (proj.recordedTrail && proj.recordedTrail.length > 2) {
-      this.lastShotTrails[proj.ownerId] = [...proj.recordedTrail, { x: hitX, y: hitY }];
-    }
-
     for (const p of this.planets) {
       const dist = Math.hypot(hitX - p.x, hitY - p.y);
-      if (dist < p.radius + w.craterRadius) {
+      const effectiveCrater = p.material.isGas ? 0 : Math.round(w.craterRadius / p.material.hardness);
+      if (dist < p.radius + (p.material.isGas ? 20 : effectiveCrater)) {
         this.carvePlanet(p, hitX, hitY, w.craterRadius);
       }
     }
@@ -898,8 +1099,8 @@ export class WarHeadsEngine {
           id: Math.random(),
           weapon: {
             ...w,
-            name: 'Shrapnel Dart',
-            damage: 20,
+            name: 'Dardo de Metralla',
+            damage: 12,
             craterRadius: 10,
             specialBehavior: undefined
           },
@@ -925,11 +1126,15 @@ export class WarHeadsEngine {
       const effectiveRadius = w.craterRadius * 1.5 + 24;
 
       if (sDist < effectiveRadius) {
-        // Linear proximity falloff: D = Dmax * (1 - d / Rblast)
-        const falloff = Math.max(0, 1 - sDist / effectiveRadius);
+        // Fórmula de Daño Cuadrático Inverso por Onda Expansiva:
+        // Daño = DañoMax * (1 - dist / RadioExplosion)^2
+        const ratio = sDist / effectiveRadius;
+        const falloff = Math.pow(Math.max(0, 1 - ratio), 2);
         const rawDmg = Math.round(w.damage * falloff);
 
         ship.lastHitTime = performance.now();
+        const prevShield = ship.shield;
+        const prevHp = ship.hp;
         let finalHpLoss = 0;
 
         // Inmunidad Anti-PEM: Inmunidad total contra drenaje de sistemas y combustible
@@ -939,13 +1144,14 @@ export class WarHeadsEngine {
         }
 
         if (w.specialBehavior === 'emp') {
-          // EMP Disruptor: 60 HP to health, drains 100% shield, drains 50% fuel
+          // Pulso PEM: Daño a casco casi nulo (20 HP), pero neutraliza escudos y 50% del combustible
           ship.shield = 0;
           ship.fuel = Math.max(0, Math.round(ship.fuel * 0.5));
-          finalHpLoss = Math.min(ship.hp, rawDmg);
-          ship.hp = Math.max(0, ship.hp - rawDmg);
+          const empDmg = Math.min(50, ship.shieldType === 'phase' ? 40 : 20);
+          finalHpLoss = Math.min(ship.hp, empDmg);
+          ship.hp = Math.max(0, ship.hp - empDmg);
         } else if (w.specialBehavior === 'repulsor') {
-          // Kinetic Concussion Hammer: Bastión Pesado es inmune a ser arrancado
+          // Onda Repulsora: 40 HP (desancla a la nave rival de la roca y la empuja al vacío)
           if (ship.shieldType !== 'bastion') {
             const pushAngle = Math.atan2(ship.y - hitY, ship.x - hitX);
             const pushForce = 9.5;
@@ -956,10 +1162,19 @@ export class WarHeadsEngine {
             ship.jumpTrail = [];
             sound.playHyperJump();
           }
-          finalHpLoss = Math.min(ship.hp, rawDmg);
-          ship.hp = Math.max(0, ship.hp - rawDmg);
+          finalHpLoss = Math.min(ship.hp, Math.min(40, rawDmg));
+          ship.hp = Math.max(0, ship.hp - finalHpLoss);
         } else {
           let dmgToApply = rawDmg;
+
+          // Cuántico de Fase: inmune a metralla y explosiones balísticas cinéticas
+          if (ship.shieldType === 'phase' && w.category === 'ballistic') {
+            continue; // Atraviesa sin daño
+          }
+          // Cuántico de Fase: recibe daño doble por antimateria y armas exóticas
+          if (ship.shieldType === 'phase' && (w.category === 'exotic' || w.specialBehavior === 'singularity' || w.specialBehavior === 'void')) {
+            dmgToApply = Math.round(dmgToApply * 2);
+          }
 
           // Colector / Absorción: Convierte 60% del daño en recarga de combustible (+35%) y +30 CR
           if (ship.shieldType === 'absorb') {
@@ -969,28 +1184,62 @@ export class WarHeadsEngine {
             ship.credits += 30;
           }
 
-          // Bastión Pesado: absorbe 80% del daño con sus 800+ SP
+          // Bastión Pesado: absorbe 85% del daño con sus 1800 SP
           if (ship.shieldType === 'bastion' && ship.shield > 0) {
-            const bastionAbsorb = Math.round(dmgToApply * 0.8);
+            const bastionAbsorb = Math.round(dmgToApply * 0.85);
             const actualAbsorbed = Math.min(ship.shield, bastionAbsorb);
             ship.shield -= actualAbsorbed;
             dmgToApply -= actualAbsorbed;
           } else if (ship.shield > 0) {
-            // Deflector Estándar y escudos normales absorben 50% de daño directo
-            const shieldAbsorbable = Math.round(dmgToApply * 0.5);
+            // Deflector Estándar y escudos normales absorben el 70% del daño entrante antes de tocar el casco
+            const shieldAbsorbable = Math.round(dmgToApply * 0.7);
             const actualAbsorbed = Math.min(ship.shield, shieldAbsorbable);
             ship.shield -= actualAbsorbed;
             dmgToApply -= actualAbsorbed;
           }
+
+          // Resistencia a Daño Crítico: NINGÚN arma en el juego puede quitar más de 300 a 350 HP de un solo golpe
+          dmgToApply = Math.min(320, dmgToApply);
           finalHpLoss = Math.min(ship.hp, dmgToApply);
           ship.hp = Math.max(0, ship.hp - dmgToApply);
         }
 
-        // Bounty for damage dealt to enemies (+2 Credits per HP)
+        const shieldLost = Math.round(prevShield - ship.shield);
+        const hullLost = Math.round(prevHp - ship.hp);
+
+        // Sistema de números flotantes temporales de daño (Cyan: Escudo #38bdf8, Rojo: Casco #ef4444)
+        if (shieldLost > 0 && hullLost > 0) {
+          this.spawnDamageNumber(ship.x - 14, ship.y - 25, `-${shieldLost}`, '#38bdf8');
+          this.spawnDamageNumber(ship.x + 14, ship.y - 25, `-${hullLost}`, '#ef4444');
+        } else if (shieldLost > 0) {
+          this.spawnDamageNumber(ship.x, ship.y - 25, `-${shieldLost}`, '#38bdf8');
+        } else if (hullLost > 0) {
+          this.spawnDamageNumber(ship.x, ship.y - 25, `-${hullLost}`, '#ef4444');
+        }
+
+        // Bounty & Bonificaciones de Impacto Táctico (+2 CR por HP infligido)
         if (shooter && ship.id !== proj.ownerId && finalHpLoss > 0) {
-          const bounty = finalHpLoss * 2;
-          shooter.credits += bounty;
-          this.onCoinCollected?.(shooter.id, bounty);
+          let totalBounty = finalHpLoss * 2;
+
+          // First Blood (+100 CR al primero en conectar un disparo directo)
+          if (!this.firstBloodClaimed) {
+            this.firstBloodClaimed = true;
+            shooter.credits += 100;
+            this.onCoinCollected?.(shooter.id, 100);
+            this.onTacticalBonus?.('¡FIRST BLOOD! +100 CR', shooter.color);
+            sound.playVictory();
+          }
+
+          // Tirachinas Magistral (+50 CR acrobático si el proyectil rodea más de 1 astro)
+          if (proj.planetsCircled && proj.planetsCircled.size >= 2) {
+            shooter.credits += 50;
+            this.onCoinCollected?.(shooter.id, 50);
+            this.onTacticalBonus?.('¡TIRACHINAS MAGISTRAL! +50 CR', '#38bdf8');
+            sound.playCoin();
+          }
+
+          shooter.credits += totalBounty;
+          this.onCoinCollected?.(shooter.id, totalBounty);
         }
 
         if (ship.hp <= 0) {
@@ -1049,6 +1298,25 @@ export class WarHeadsEngine {
     this.aiThinkTimer++;
     if (this.aiThinkTimer < 55) return; // 0.9s thinking delay
     this.aiThinkTimer = 0;
+
+    // Fase de Defensa Inicial inteligente para la IA en Turno 1
+    if (!this.hasConfiguredDefense[currentShip.id]) {
+      this.hasConfiguredDefense[currentShip.id] = true;
+      const rivals = this.ships.filter(s => s.alive && s.id !== currentShip.id);
+      const closest = rivals[0];
+      const dist = closest ? Math.hypot(closest.x - currentShip.x, closest.y - currentShip.y) : 700;
+      if (dist < 550 && currentShip.credits >= 40) {
+        this.selectShield('ricochet');
+      } else if (dist >= 700 && currentShip.credits >= 60) {
+        this.selectShield('absorb');
+      } else if (currentShip.credits >= 90 && Math.random() < 0.4) {
+        this.selectShield('repulsor');
+      } else {
+        this.selectShield('deflector');
+      }
+      const activeDef = SHIELD_CATALOG.find(s => s.id === currentShip.shieldType);
+      this.onTacticalBonus?.(`IA: ESCUDO ${activeDef?.name.toUpperCase() || 'DEFLECTOR'}`, currentShip.color);
+    }
 
     const rivals = this.ships.filter(s => s.alive && s.id !== currentShip.id);
     if (rivals.length === 0) return;
@@ -1132,11 +1400,11 @@ export class WarHeadsEngine {
         });
       }
 
-      // Napalm persistent burning damage (25 HP/sec = ~0.42 HP/frame)
+      // Napalm persistent burning damage (12 HP/sec = ~0.20 HP/frame)
       for (const ship of this.ships) {
         if (!ship.alive || ship.isAirborne) continue;
         if (Math.hypot(ship.x - nap.x, ship.y - nap.y) < 32) {
-          ship.hp = Math.max(0, ship.hp - 0.42);
+          ship.hp = Math.max(0, ship.hp - 0.20);
           if (ship.hp <= 0) {
             ship.alive = false;
             sound.playExplosion(45);
@@ -1150,9 +1418,17 @@ export class WarHeadsEngine {
       const p = this.projectiles[pIdx];
       p.life++;
 
-      p.trail.unshift({ x: p.x, y: p.y, alpha: 1.0 });
-      if (p.trail.length > 28) p.trail.pop();
-      for (const pt of p.trail) pt.alpha *= 0.94;
+      // Estela activa efímera: partículas volátiles cortas (fade out completo en menos de 0.25s)
+      this.particles.push({
+        x: p.x,
+        y: p.y,
+        vx: -p.vx * 0.12 + (Math.random() - 0.5) * 0.8,
+        vy: -p.vy * 0.12 + (Math.random() - 0.5) * 0.8,
+        color: p.weapon.color,
+        size: Math.random() * 2.2 + 1.2,
+        life: 0,
+        maxLife: 9 + Math.random() * 5
+      });
 
       // Check coin collection by projectile (+50 CR)
       for (const coin of this.coins) {
@@ -1250,10 +1526,14 @@ export class WarHeadsEngine {
         let totalAy = 0;
 
         // Plummer Softened Gravity Law: ax = sum(G * M * dx / (r^2 + epsilon^2)^1.5)
+        if (!p.planetsCircled) p.planetsCircled = new Set();
         for (const planet of this.planets) {
           const dx = planet.x - p.x;
           const dy = planet.y - p.y;
           const distSq = dx * dx + dy * dy;
+          if (distSq < Math.pow(planet.radius + 75, 2)) {
+            p.planetsCircled.add(planet.id);
+          }
           const denom = Math.pow(distSq + PLUMMER_EPSILON_SQ, 1.5);
 
           const isInverted = Date.now() < planet.gravitonInvertedUntil;
@@ -1318,6 +1598,20 @@ export class WarHeadsEngine {
             }
           }
           if (destroyed) break;
+        }
+
+
+        // Colección de gemas de combustible verde (+30% Fuel)
+        for (const gem of this.fuelGems) {
+          if (!gem.collected && Math.hypot(p.x - gem.x, p.y - gem.y) < gem.radius + 18) {
+            gem.collected = true;
+            const owner = this.ships.find(s => s.id === p.ownerId);
+            if (owner) {
+              owner.fuel = Math.min(100, owner.fuel + 30);
+              this.onTacticalBonus?.('¡GEMA DE COMBUSTIBLE! +30% COMB', '#10b981');
+              sound.playCoin();
+            }
+          }
         }
 
         p.x += p.vx * subDt * 60;
@@ -1395,9 +1689,31 @@ export class WarHeadsEngine {
         }
         if (hitShip) break;
 
-        // Collision with planets
+        // Fluid drag & Collision with planets
         let hitPlanetSolid = false;
         for (const planet of this.planets) {
+          // Gigante Gaseoso: frena ligeramente el proyectil disipando gases sin cráteres fijos
+          if (planet.material.isGas) {
+            const dist = Math.hypot(p.x - planet.x, p.y - planet.y);
+            if (dist < planet.radius) {
+              p.vx *= 0.985;
+              p.vy *= 0.985;
+              if (Math.random() < 0.45) {
+                this.particles.push({
+                  x: p.x + (Math.random() - 0.5) * 4,
+                  y: p.y + (Math.random() - 0.5) * 4,
+                  vx: -p.vx * 0.12 + (Math.random() - 0.5) * 0.8,
+                  vy: -p.vy * 0.12 + (Math.random() - 0.5) * 0.8,
+                  color: Math.random() < 0.5 ? '#38bdf8' : '#f59e0b',
+                  size: 2.8,
+                  life: 0,
+                  maxLife: 15
+                });
+              }
+            }
+            continue;
+          }
+
           if (this.checkPlanetSolid(planet, p.x, p.y)) {
             if (p.isBorer) {
               this.carvePlanet(planet, p.x, p.y, 14);
@@ -1462,18 +1778,7 @@ export class WarHeadsEngine {
 
       if (destroyed) continue;
 
-      p.trail.unshift({ x: p.x, y: p.y, alpha: 1.0 });
-      if (p.trail.length > 28) p.trail.pop();
-      for (const pt of p.trail) pt.alpha *= 0.94;
-
-      if (p.recordedTrail && p.life % 2 === 0) {
-        p.recordedTrail.push({ x: p.x, y: p.y });
-      }
-
       if (p.life > p.maxLife) {
-        if (p.recordedTrail && p.recordedTrail.length > 2) {
-          this.lastShotTrails[p.ownerId] = p.recordedTrail;
-        }
         this.projectiles.splice(pIdx, 1);
       }
     }
@@ -1483,9 +1788,19 @@ export class WarHeadsEngine {
       if (!ship.alive || !ship.isAirborne) continue;
       ship.flightTime++;
 
-      ship.jumpTrail.unshift({ x: ship.x, y: ship.y, alpha: 1.0 });
-      if (ship.jumpTrail.length > 28) ship.jumpTrail.pop();
-      for (const pt of ship.jumpTrail) pt.alpha *= 0.93;
+      // Propulsión efímera de nave en salto: partículas de tobera cortas (fade out en < 0.25s)
+      if (Math.random() < 0.8) {
+        this.particles.push({
+          x: ship.x,
+          y: ship.y,
+          vx: -ship.vx * 0.15 + (Math.random() - 0.5) * 1.5,
+          vy: -ship.vy * 0.15 + (Math.random() - 0.5) * 1.5,
+          color: ship.color,
+          size: Math.random() * 2.2 + 1.2,
+          life: 0,
+          maxLife: 10 + Math.random() * 5
+        });
+      }
 
       // Coin collection while in orbital flight (+50 CR)
       for (const coin of this.coins) {
@@ -1598,7 +1913,17 @@ export class WarHeadsEngine {
               break;
             }
           }
-          if (landed) break;
+  
+        for (const gem of this.fuelGems) {
+          if (!gem.collected && Math.hypot(ship.x - gem.x, ship.y - gem.y) < gem.radius + 24) {
+            gem.collected = true;
+            ship.fuel = Math.min(100, ship.fuel + 30);
+            this.onTacticalBonus?.('¡GEMA DE COMBUSTIBLE! +30% COMB', '#10b981');
+            sound.playCoin();
+          }
+        }
+
+        if (landed) break;
         }
       }
 
@@ -1633,6 +1958,19 @@ export class WarHeadsEngine {
       }
     }
 
+    // 5.5. Update Floating Damage Numbers (Temporales sobre las naves)
+    for (let i = this.damageNumbers.length - 1; i >= 0; i--) {
+      const dn = this.damageNumbers[i];
+      dn.life++;
+      dn.x += dn.vx;
+      dn.y += dn.vy;
+      dn.vy *= 0.96;
+      dn.alpha = Math.max(0, 1 - Math.pow(dn.life / dn.maxLife, 1.4));
+      if (dn.life >= dn.maxLife) {
+        this.damageNumbers.splice(i, 1);
+      }
+    }
+
     // Check Turn Transition (1 -> 2 -> 3 -> 1 cycle)
     const anyAirborne = this.ships.some(s => s.alive && s.isAirborne);
     if (this.isSimulating && this.projectiles.length === 0 && !anyAirborne && this.particles.length < 8) {
@@ -1655,9 +1993,21 @@ export class WarHeadsEngine {
 
   public render() {
     const ctx = this.ctx;
-
-    // 1. Deep Space Vacuum Background (100% Fixed)
+    // Clear whole screen with deep space background
     ctx.fillStyle = '#05070d';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.save();
+    // Center-anchored zoom & pan transform (100% user controlled, never auto-zoom on fire)
+    const cx = this.canvas.width / 2;
+    const cy = this.canvas.height / 2;
+    const effectiveScale = this.scale * this.userZoom;
+    ctx.translate(cx + this.panX, cy + this.panY);
+    ctx.scale(effectiveScale, effectiveScale);
+    ctx.translate(-this.width / 2, -this.height / 2);
+
+    // 1. Deep Space Vacuum Background (Fixed 900 x height)
+    ctx.fillStyle = '#060913';
     ctx.fillRect(0, 0, this.width, this.height);
 
     // Tactical Radar Lines
@@ -1688,10 +2038,8 @@ export class WarHeadsEngine {
     }
     ctx.restore();
 
-    // 3. Render Celestial Bodies
+    // 3. Render Celestial Bodies (Cero sombras fantasma globales en el canvas principal)
     for (const planet of this.planets) {
-      drawAtmosphereGlow(ctx, planet.x, planet.y, planet.radius, planet.type);
-
       if (Date.now() < planet.gravitonInvertedUntil) {
         ctx.save();
         ctx.strokeStyle = 'rgba(217, 70, 239, 0.7)';
@@ -1710,6 +2058,47 @@ export class WarHeadsEngine {
         planet.radius * 2,
         planet.radius * 2
       );
+
+      // INDICADOR TÁCTICO EN EL HUD:
+      // Ficha técnica militar seleccionada o micro-etiqueta no intrusiva
+      const isSelected = planet.id === this.selectedPlanetId;
+
+      if (isSelected) {
+        // Retícula táctica de selección
+        ctx.save();
+        ctx.strokeStyle = planet.material.color;
+        ctx.lineWidth = 1.5;
+        const boxSize = planet.radius + 8;
+        ctx.strokeRect(planet.x - boxSize, planet.y - boxSize, boxSize * 2, boxSize * 2);
+
+        // Ficha técnica militar destacada
+        const tagText = `[ ${planet.material.shortName}: DENS ${planet.material.density}x | DUREZA ${planet.material.isGas ? 'FLUIDO' : planet.material.hardness + 'x'} ]`;
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        const tagY = planet.y - planet.radius - 12;
+
+        const textWidth = ctx.measureText(tagText).width;
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.92)';
+        ctx.strokeStyle = planet.material.color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(planet.x - textWidth / 2 - 6, tagY - 14, textWidth + 12, 18);
+        ctx.strokeRect(planet.x - textWidth / 2 - 6, tagY - 14, textWidth + 12, 18);
+
+        ctx.fillStyle = planet.material.color;
+        ctx.fillText(tagText, planet.x, tagY);
+        ctx.restore();
+      } else {
+        // Micro-etiqueta táctica minimalista inferior (transparente, no estorba)
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.font = 'bold 8px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = planet.material.color;
+        ctx.fillText(`${planet.material.shortName} • ${planet.material.density}x`, planet.x, planet.y + planet.radius + 4);
+        ctx.restore();
+      }
     }
 
     // 4. Render WarHeads 3D Gold Coins (Orbital & Excavated)
@@ -1769,6 +2158,35 @@ export class WarHeadsEngine {
       ctx.restore();
     }
 
+
+    // 4.5. Render Floating Emerald Fuel Crystals (+30% Fuel)
+    for (const gem of this.fuelGems) {
+      if (gem.collected) continue;
+      const spinScale = Math.abs(Math.sin(now * 0.0035 + gem.spinOffset));
+      const gemW = Math.max(3, 8 * spinScale);
+      const gemH = 12;
+
+      ctx.save();
+      ctx.translate(gem.x, gem.y);
+      ctx.shadowColor = '#10b981';
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = '#10b981';
+
+      ctx.beginPath();
+      ctx.moveTo(0, -gemH / 2);
+      ctx.lineTo(gemW, 0);
+      ctx.lineTo(0, gemH / 2);
+      ctx.lineTo(-gemW, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = '#6ee7b7';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
     // 5. Render Singularities
     for (const s of this.singularities) {
       ctx.save();
@@ -1789,52 +2207,14 @@ export class WarHeadsEngine {
       ctx.restore();
     }
 
-    // 5.5. Render Last Shot Ghost Trace (Orbital guide from previous turn)
-    const prevShot = this.lastShotTrails[this.currentTurn];
-    if (prevShot && prevShot.length > 2 && !this.isSimulating) {
-      ctx.save();
-      const currentShip = this.ships.find(s => s.id === this.currentTurn);
-      ctx.strokeStyle = currentShip ? currentShip.color : '#38bdf8';
-      ctx.lineWidth = 1.5;
-      ctx.globalAlpha = 0.45;
-      ctx.setLineDash([3, 4]);
-      for (let i = 0; i < prevShot.length - 1; i++) {
-        const dx = Math.abs(prevShot[i].x - prevShot[i + 1].x);
-        const dy = Math.abs(prevShot[i].y - prevShot[i + 1].y);
-        if (dx > 80 || dy > 80) continue; // Respect toroidal wrap without cross-screen lines
-        ctx.beginPath();
-        ctx.moveTo(prevShot[i].x, prevShot[i].y);
-        ctx.lineTo(prevShot[i + 1].x, prevShot[i + 1].y);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
     // 6. Render Ships
     for (const ship of this.ships) {
       if (!ship.alive) continue;
       this.renderShip(ctx, ship);
     }
 
-    // 7. Render Projectiles
+    // 7. Render Projectiles (cabeza luminosa sin estelas de líneas residuales)
     for (const p of this.projectiles) {
-      if (p.trail.length > 1) {
-        ctx.save();
-        ctx.lineWidth = 2.5;
-        for (let i = 0; i < p.trail.length - 1; i++) {
-          const dx = Math.abs(p.trail[i].x - p.trail[i + 1].x);
-          const dy = Math.abs(p.trail[i].y - p.trail[i + 1].y);
-          if (dx > 80 || dy > 80) continue; // Never connect wrapped points across the screen!
-          ctx.beginPath();
-          ctx.moveTo(p.trail[i].x, p.trail[i].y);
-          ctx.lineTo(p.trail[i + 1].x, p.trail[i + 1].y);
-          ctx.strokeStyle = p.weapon.glowColor;
-          ctx.globalAlpha = p.trail[i].alpha;
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-
       ctx.save();
       ctx.fillStyle = p.weapon.color;
       ctx.shadowColor = p.weapon.color;
@@ -1853,7 +2233,7 @@ export class WarHeadsEngine {
       ctx.restore();
     }
 
-    // 8. Render Particles
+    // 8. Render Particles (estelas volátiles efímeras con desvanecimiento rápido)
     for (const pt of this.particles) {
       const alpha = 1.0 - pt.life / pt.maxLife;
       ctx.save();
@@ -1865,43 +2245,34 @@ export class WarHeadsEngine {
       ctx.restore();
     }
 
-    // 9. Trajectory Guide for Active Human Player
-    if (!this.isSimulating && !this.roundWinner) {
-      const activeShip = this.ships.find(s => s.id === this.currentTurn);
-      if (activeShip && !activeShip.isAI) {
-        this.renderTrajectoryGuide(ctx, activeShip);
+    // 9. Render Floating Damage Numbers (Temporales sobre las naves: Cyan para escudo, Rojo para casco)
+    if (this.damageNumbers.length > 0) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const dn of this.damageNumbers) {
+        ctx.save();
+        ctx.globalAlpha = dn.alpha;
+        const fontSize = Math.round(11 + (1 - dn.life / dn.maxLife) * 3);
+        ctx.font = `900 ${fontSize}px monospace`;
+        ctx.shadowColor = dn.color;
+        ctx.shadowBlur = 8;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(2, 6, 23, 0.95)';
+        ctx.strokeText(dn.text, dn.x, dn.y);
+        ctx.fillStyle = dn.color;
+        ctx.fillText(dn.text, dn.x, dn.y);
+        ctx.restore();
       }
+      ctx.restore();
     }
+    ctx.restore();
   }
 
   /**
    * Detailed Vector Rendering of the 3 Distinct WarHeads Ship Models
    */
   private renderShip(ctx: CanvasRenderingContext2D, ship: Ship) {
-    if (ship.isAirborne && ship.jumpTrail.length > 1) {
-      ctx.save();
-      ctx.lineWidth = 3.5;
-      let trailColor = ship.color;
-      if (ship.model === 'enterprise') trailColor = '#38bdf8';
-      else if (ship.model === 'falcon') trailColor = '#00e5ff';
-      else if (ship.model === 'xwing') trailColor = '#f97316';
-      else if (ship.model === 'dreadnought') trailColor = '#f97316';
-      else if (ship.model === 'frigate') trailColor = '#10b981';
-      else if (ship.model === 'quantum') trailColor = '#c084fc';
-      for (let i = 0; i < ship.jumpTrail.length - 1; i++) {
-        const dx = Math.abs(ship.jumpTrail[i].x - ship.jumpTrail[i + 1].x);
-        const dy = Math.abs(ship.jumpTrail[i].y - ship.jumpTrail[i + 1].y);
-        if (dx > 80 || dy > 80) continue; // Never connect wrapped points across the screen!
-        ctx.beginPath();
-        ctx.moveTo(ship.jumpTrail[i].x, ship.jumpTrail[i].y);
-        ctx.lineTo(ship.jumpTrail[i + 1].x, ship.jumpTrail[i + 1].y);
-        ctx.strokeStyle = trailColor;
-        ctx.globalAlpha = ship.jumpTrail[i].alpha * 0.85;
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
     ctx.save();
     ctx.translate(ship.x, ship.y);
 
@@ -2517,47 +2888,6 @@ export class WarHeadsEngine {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.lineWidth = 0.5;
       ctx.strokeRect(bx, by, barW, barH);
-    }
-    ctx.restore();
-  }
-
-  private renderTrajectoryGuide(ctx: CanvasRenderingContext2D, ship: Ship) {
-    const rad = (ship.aimAngle * Math.PI) / 180;
-    const speed = ship.power * 0.082 + 1.2;
-    let simX = ship.x + Math.cos(rad) * 22;
-    let simY = ship.y - Math.sin(rad) * 22;
-    let simVx = Math.cos(rad) * speed;
-    let simVy = -Math.sin(rad) * speed;
-
-    ctx.save();
-    ctx.fillStyle = ship.color;
-    const steps = 18;
-    for (let step = 0; step < steps; step++) {
-      let ax = 0;
-      let ay = 0;
-      for (const pl of this.planets) {
-        const dx = pl.x - simX;
-        const dy = pl.y - simY;
-        const dSq = dx * dx + dy * dy;
-        const denom = Math.pow(dSq + PLUMMER_EPSILON_SQ, 1.5);
-        const f = (G_CONSTANT * pl.currentMass) / denom;
-        ax += dx * f;
-        ay += dy * f;
-      }
-      simVx += ax * (1 / 60);
-      simVy += ay * (1 / 60);
-      simX += simVx;
-      simY += simVy;
-
-      if (simX < 0) simX += this.width;
-      else if (simX >= this.width) simX -= this.width;
-      if (simY < 0) simY += this.height;
-      else if (simY >= this.height) simY -= this.height;
-
-      ctx.globalAlpha = 0.85 * (1 - step / steps);
-      ctx.beginPath();
-      ctx.arc(simX, simY, 2.2, 0, Math.PI * 2);
-      ctx.fill();
     }
     ctx.restore();
   }

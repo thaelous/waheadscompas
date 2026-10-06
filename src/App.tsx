@@ -45,7 +45,9 @@ import {
   Check,
   Compass,
   Sparkles,
-  Settings
+  Settings,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 
 interface TouchAimData {
@@ -90,6 +92,7 @@ export default function App() {
   // Weapon Matrix Dialog
   const [showWeaponMatrix, setShowWeaponMatrix] = useState(false);
   const [showShieldMatrix, setShowShieldMatrix] = useState(false);
+  const [showInitialDefenseModal, setShowInitialDefenseModal] = useState(false);
 
   // Splash Screen & Modals
   const [showSplashScreen, setShowSplashScreen] = useState(true);
@@ -112,10 +115,18 @@ export default function App() {
   const mobileDialRef = useRef<SVGSVGElement | null>(null);
   const [isDraggingDial, setIsDraggingDial] = useState(false);
 
+  // Tactical Zoom State (Manual player-controlled 0.6x to 1.6x)
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+  const isPinchingRef = useRef(false);
+
+  // Tactical Planet Material Inspection State
+  const [selectedPlanetId, setSelectedPlanetId] = useState<number | null>(null);
+
   // Current active ship
   const activeShip = ships.find(s => s.id === currentTurn) || ships[0];
   const activeWeapon = WEAPON_CATALOG.find(w => w.id === activeShip?.weaponId) || WEAPON_CATALOG[0];
   const activeShield = SHIELD_CATALOG.find(s => s.id === activeShip?.shieldType) || SHIELD_CATALOG[0];
+  const isDefensePending = !activeShip?.isAI && !!engineRef.current && !engineRef.current.hasConfiguredDefense[activeShip?.id || 1];
 
   // Mobile Haptic Vibration Feedback
   const triggerHaptic = useCallback((pattern: number | number[] = 15) => {
@@ -277,11 +288,16 @@ export default function App() {
       setCurrentTurn(newTurn);
       setIsSimulating(false);
       setShips([...engine.ships]);
+      const nextShip = engine.ships.find(s => s.id === newTurn);
+      if (nextShip && !nextShip.isAI && !engine.hasConfiguredDefense[newTurn]) {
+        setShowInitialDefenseModal(true);
+      }
     };
 
     engine.onStateUpdate = () => {
       setIsSimulating(engine.isSimulating);
       setShips([...engine.ships]);
+      setZoomLevel(engine.userZoom);
     };
 
     engine.onGameOver = (win) => {
@@ -304,6 +320,70 @@ export default function App() {
     };
 
     setShips([...engine.ships]);
+
+    // Multitouch Pinch-to-Zoom & Pan (0.6x to 1.6x, stable center-anchored)
+    let initialPinchDist = 0;
+    let initialZoom = 1.0;
+    let initialCenter = { x: 0, y: 0 };
+    let initialPan = { x: 0, y: 0 };
+
+    const handleCanvasTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2 && engineRef.current) {
+        isPinchingRef.current = true;
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        initialPinchDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        initialZoom = engineRef.current.userZoom;
+        initialCenter = {
+          x: (t0.clientX + t1.clientX) / 2,
+          y: (t0.clientY + t1.clientY) / 2
+        };
+        initialPan = {
+          x: engineRef.current.panX,
+          y: engineRef.current.panY
+        };
+        setTouchAimData(null);
+      }
+    };
+
+    const handleCanvasTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && isPinchingRef.current && engineRef.current) {
+        e.preventDefault(); // Stop native viewport scrolling/zooming
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        const currentDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        if (initialPinchDist > 8) {
+          const factor = currentDist / initialPinchDist;
+          engineRef.current.setZoom(initialZoom * factor);
+          const currentMidX = (t0.clientX + t1.clientX) / 2;
+          const currentMidY = (t0.clientY + t1.clientY) / 2;
+          engineRef.current.panX = Math.max(-280, Math.min(280, initialPan.x + (currentMidX - initialCenter.x)));
+          engineRef.current.panY = Math.max(-320, Math.min(320, initialPan.y + (currentMidY - initialCenter.y)));
+          setZoomLevel(engineRef.current.userZoom);
+        }
+      }
+    };
+
+    const handleCanvasTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        isPinchingRef.current = false;
+      }
+    };
+
+    const handleCanvasWheel = (e: WheelEvent) => {
+      if (engineRef.current) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.08 : -0.08;
+        engineRef.current.setZoom(engineRef.current.userZoom + delta);
+        setZoomLevel(engineRef.current.userZoom);
+      }
+    };
+
+    canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', handleCanvasTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleCanvasTouchEnd, { passive: true });
+    canvas.addEventListener('touchcancel', handleCanvasTouchEnd, { passive: true });
+    canvas.addEventListener('wheel', handleCanvasWheel, { passive: false });
 
     // Handle Network shots
     network.onShot((shot: NetworkShotEvent) => {
@@ -338,6 +418,11 @@ export default function App() {
     return () => {
       window.removeEventListener('resize', syncCanvasSize);
       window.removeEventListener('orientationchange', syncCanvasSize);
+      canvas.removeEventListener('touchstart', handleCanvasTouchStart);
+      canvas.removeEventListener('touchmove', handleCanvasTouchMove);
+      canvas.removeEventListener('touchend', handleCanvasTouchEnd);
+      canvas.removeEventListener('touchcancel', handleCanvasTouchEnd);
+      canvas.removeEventListener('wheel', handleCanvasWheel);
       engine.destroy();
     };
   }, []);
@@ -405,6 +490,19 @@ export default function App() {
     }
   }, [currentTurn, isSimulating, winner, triggerHaptic]);
 
+  const handleConfirmInitialDefense = useCallback((shieldId?: ShieldType) => {
+    if (!engineRef.current || !activeShip) return;
+    const chosen = shieldId || activeShip.shieldType || 'deflector';
+    if (chosen !== activeShip.shieldType) {
+      engineRef.current.selectShield(chosen);
+    }
+    engineRef.current.hasConfiguredDefense[activeShip.id] = true;
+    setShips([...engineRef.current.ships]);
+    sound.playBeep(880, 0.1);
+    triggerHaptic([30, 20, 40]);
+    setShowInitialDefenseModal(false);
+  }, [activeShip, triggerHaptic]);
+
   // Fire Weapon
   const handleFire = useCallback(() => {
     if (!engineRef.current || isSimulating || winner) return;
@@ -413,8 +511,20 @@ export default function App() {
       return;
     }
 
+    // Auto-cerrar escáner planetario al iniciar un disparo
+    setSelectedPlanetId(null);
+    engineRef.current.selectPlanet(null);
+
     const ship = engineRef.current.ships.find(s => s.id === currentTurn);
     if (!ship || ship.isAI) return;
+
+    // Si no ha configurado su defensa inicial en Turno 1, abrir modal obligatorio
+    if (!engineRef.current.hasConfiguredDefense[ship.id]) {
+      setShowInitialDefenseModal(true);
+      sound.playBeep(440, 0.08);
+      triggerHaptic(25);
+      return;
+    }
 
     const weapon = WEAPON_CATALOG.find(w => w.id === ship.weaponId) || WEAPON_CATALOG[0];
     if (ship.credits < weapon.price) {
@@ -443,10 +553,22 @@ export default function App() {
       return;
     }
 
+    // Auto-cerrar escáner planetario al iniciar un salto
+    setSelectedPlanetId(null);
+    engineRef.current.selectPlanet(null);
+
     const ship = engineRef.current.ships.find(s => s.id === currentTurn);
     if (!ship || ship.isAI || ship.fuel < 25) {
       triggerHaptic([30, 40]);
       sound.playBeep(200, 0.1);
+      return;
+    }
+
+    // Si no ha configurado su defensa inicial en Turno 1, abrir modal obligatorio
+    if (!engineRef.current.hasConfiguredDefense[ship.id]) {
+      setShowInitialDefenseModal(true);
+      sound.playBeep(440, 0.08);
+      triggerHaptic(25);
       return;
     }
 
@@ -476,6 +598,7 @@ export default function App() {
     setWinner(null);
     setIsSimulating(false);
     setShips([...engineRef.current.ships]);
+    setShowInitialDefenseModal(true);
     sound.playBeep(660, 0.1);
   }, [isOnlineMode, gameConfig, triggerHaptic]);
 
@@ -553,9 +676,39 @@ export default function App() {
     setIsDraggingDial(false);
   };
 
-  // Direct Canvas Touch-To-Aim for Mobile & Pointer devices
+  // Direct Canvas Touch-To-Aim & Planet Inspection for Mobile & Pointer devices
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (isSimulating || winner || activeShip?.isAI) return;
+    if (isPinchingRef.current) return;
+    if (isSimulating || winner) return;
+
+    // Inspección táctica de astros: pulsar un planeta para inspeccionar ficha técnica
+    if (canvasRef.current && engineRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+      const worldPt = engineRef.current.screenToWorld(canvasX, canvasY);
+      const clickedPlanet = engineRef.current.planets.find(
+        p => Math.hypot(p.x - worldPt.x, p.y - worldPt.y) <= p.radius + 18
+      );
+      if (clickedPlanet) {
+        const newId = selectedPlanetId === clickedPlanet.id ? null : clickedPlanet.id;
+        setSelectedPlanetId(newId);
+        engineRef.current.selectPlanet(newId);
+        if (newId) {
+          sound.playScanner();
+          triggerHaptic([20, 25]);
+        } else {
+          sound.playBeep(480, 0.05);
+        }
+        return; // No alterar el ángulo de disparo al inspeccionar un planeta
+      } else if (selectedPlanetId !== null) {
+        // Tocar fuera cierra la ficha de inspección táctica
+        setSelectedPlanetId(null);
+        engineRef.current.selectPlanet(null);
+      }
+    }
+
+    if (activeShip?.isAI) return;
     if (isOnlineMode && currentTurn !== localPlayerId) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -566,6 +719,13 @@ export default function App() {
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isPinchingRef.current) {
+      if (isTouchAiming) {
+        setIsTouchAiming(false);
+        setTouchAimData(null);
+      }
+      return;
+    }
     if (!isTouchAiming) return;
     updateAimFromPointer(e);
   };
@@ -585,6 +745,10 @@ export default function App() {
     const canvasX = e.clientX - rect.left;
     const canvasY = e.clientY - rect.top;
 
+    // Convert screen coordinates to world coordinates via center-anchored camera
+    const worldPoint = engineRef.current.screenToWorld(canvasX, canvasY);
+    const shipScreen = engineRef.current.worldToScreen(activeShip.x, activeShip.y);
+
     const container = canvasRef.current.parentElement;
     let shipScreenX = 0;
     let shipScreenY = 0;
@@ -593,14 +757,14 @@ export default function App() {
 
     if (container) {
       const cRect = container.getBoundingClientRect();
-      shipScreenX = activeShip.x + (rect.left - cRect.left);
-      shipScreenY = activeShip.y + (rect.top - cRect.top);
+      shipScreenX = shipScreen.x + (rect.left - cRect.left);
+      shipScreenY = shipScreen.y + (rect.top - cRect.top);
       touchScreenX = e.clientX - cRect.left;
       touchScreenY = e.clientY - cRect.top;
     }
 
-    const dx = canvasX - activeShip.x;
-    const dy = activeShip.y - canvasY; // Standard Cartesian (up is positive)
+    const dx = worldPoint.x - activeShip.x;
+    const dy = activeShip.y - worldPoint.y; // Standard Cartesian (up is positive)
     let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
     if (deg < 0) deg += 360;
 
@@ -623,6 +787,34 @@ export default function App() {
       distance: Math.round(dist)
     });
   };
+
+  // Tactical Zoom Manual Handlers
+  const handleZoomIn = useCallback(() => {
+    if (engineRef.current) {
+      engineRef.current.zoomIn(0.15);
+      setZoomLevel(engineRef.current.userZoom);
+      triggerHaptic(15);
+      sound.playDialTick();
+    }
+  }, [triggerHaptic]);
+
+  const handleZoomOut = useCallback(() => {
+    if (engineRef.current) {
+      engineRef.current.zoomOut(0.15);
+      setZoomLevel(engineRef.current.userZoom);
+      triggerHaptic(15);
+      sound.playDialTick();
+    }
+  }, [triggerHaptic]);
+
+  const handleResetZoom = useCallback(() => {
+    if (engineRef.current) {
+      engineRef.current.resetZoom();
+      setZoomLevel(1.0);
+      triggerHaptic(20);
+      sound.playBeep(580, 0.06);
+    }
+  }, [triggerHaptic]);
 
   // Keyboard controls
   useEffect(() => {
@@ -756,6 +948,7 @@ export default function App() {
                 triggerHaptic(20);
                 setShowSplashScreen(false);
                 setShowHangarModal(false);
+                setShowInitialDefenseModal(true);
               }}
               className="mt-4 text-xs text-slate-400 hover:text-cyan-300 transition-colors uppercase tracking-wider underline underline-offset-4 cursor-pointer"
             >
@@ -778,20 +971,20 @@ export default function App() {
               </div>
               <div className="p-2 rounded bg-slate-950/80 border border-slate-800">
                 <span className="text-purple-300 font-bold block">CÁMARA FIJA</span>
-                <span>1280x720 Móvil-Lock</span>
+                <span>Zoom Táctico 1:1</span>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 1. BARRA SUPERIOR FIJA ULTRA-COMPACTA (45px de alto) */}
+      {/* 1. BARRA SUPERIOR FIJA ULTRA-COMPACTA (36px de alto) */}
       <header
-        className="h-[40px] max-h-[40px] min-h-[40px] w-full px-2.5 flex items-center justify-between bg-black/90 backdrop-blur-sm border-b border-cyan-900/60 shadow-md z-20 shrink-0 font-mono text-[11px] select-none"
+        className="h-[36px] max-h-[36px] min-h-[36px] w-full px-2.5 flex items-center justify-between bg-black/90 backdrop-blur-sm border-b border-cyan-900/60 shadow-md z-20 shrink-0 font-mono text-[11px] select-none"
         style={{
-          height: '40px',
-          maxHeight: '40px',
-          minHeight: '40px',
+          height: '36px',
+          maxHeight: '36px',
+          minHeight: '36px',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
@@ -920,10 +1113,146 @@ export default function App() {
             <span>{coinNotification.text}</span>
           </div>
         )}
+
+        {/* Ventana Flotante Táctica Militar de Inspección Planetaria (Al tocar un astro) */}
+        {(() => {
+          const selPlanet = engineRef.current?.planets.find(p => p.id === selectedPlanetId);
+          if (!selPlanet) return null;
+
+          const diameterKm = Math.round(selPlanet.radius * 2 * 1150).toLocaleString('es-ES') + ' km';
+          const surfaceGravity = (selPlanet.material.density * (selPlanet.currentMass / selPlanet.baseMass) * 1.1).toFixed(1) + ' G';
+
+          let hardnessLabel = 'ESTÁNDAR (1.0x - Absorción equilibrada)';
+          if (selPlanet.material.type === 'ice') {
+            hardnessLabel = 'MUY FRÁGIL (0.4x - Vulnerable a explosiones)';
+          } else if (selPlanet.material.type === 'iron') {
+            hardnessLabel = 'ALTA (2.8x - Resistente a explosiones)';
+          } else if (selPlanet.material.isGas) {
+            hardnessLabel = 'ESPECIAL (Fluido - Sin cráteres permanentes)';
+          } else if (selPlanet.material.type === 'neutron') {
+            hardnessLabel = 'EXTREMA (4.0x - Casi indestructible)';
+          }
+
+          const massPercent = Math.round((selPlanet.currentMass / selPlanet.baseMass) * 100);
+
+          return (
+            <div
+              className="absolute top-2 left-1/2 -translate-x-1/2 z-40 w-[92%] max-w-xs bg-slate-950/95 backdrop-blur-md rounded-xl border p-3 shadow-[0_0_25px_rgba(0,0,0,0.9)] font-mono text-[11px] select-none pointer-events-auto"
+              style={{ borderColor: selPlanet.material.color }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Encabezado Militar con Indicador de Escáner */}
+              <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/80 mb-2">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full animate-ping shrink-0"
+                    style={{ backgroundColor: selPlanet.material.color }}
+                  />
+                  <span className="font-black text-slate-100 tracking-wider text-[11px] uppercase">
+                    {selPlanet.name} • {selPlanet.material.shortName}
+                  </span>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedPlanetId(null);
+                    engineRef.current?.selectPlanet(null);
+                  }}
+                  className="w-5 h-5 flex items-center justify-center rounded-md text-slate-400 hover:text-white bg-slate-900 border border-slate-700 cursor-pointer text-[10px]"
+                  title="Cerrar Ficha Táctica"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Grid de Telemetría Táctica Militar */}
+              <div className="space-y-1.5 text-[10.5px]">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Material:</span>
+                  <span className="font-bold text-slate-200">{selPlanet.material.name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Diámetro:</span>
+                  <span className="font-bold text-cyan-300">{diameterKm}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Gravedad Superficial:</span>
+                  <span className="font-bold text-amber-300">{surfaceGravity} (Dens: {selPlanet.material.density}x)</span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-slate-400">Dureza de Corteza:</span>
+                  <span className="font-semibold text-emerald-300 text-[10px] pl-1">
+                    {hardnessLabel}
+                  </span>
+                </div>
+
+                {/* Barra de Estado de Masa / Destrucción */}
+                <div className="pt-1.5 border-t border-slate-900">
+                  <div className="flex justify-between items-center mb-1 text-[10px]">
+                    <span className="text-slate-400">Estado de Destrucción:</span>
+                    <span className={`font-black ${massPercent > 50 ? 'text-cyan-400' : 'text-rose-400'}`}>
+                      {massPercent}% masa restante
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${massPercent}%`,
+                        backgroundColor: massPercent > 50 ? selPlanet.material.color : '#f43f5e'
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* CONTROLES DE ZOOM TÁCTICO MANUAL (IN / OUT / 1:1) */}
+        <aside
+          aria-label="Controles tácticos de zoom"
+          className="absolute right-2 sm:right-3.5 top-1/2 -translate-y-1/2 z-30 flex flex-col items-center gap-1.5 p-1 bg-slate-950/85 backdrop-blur-md rounded-xl border border-cyan-800/80 shadow-[0_0_20px_rgba(0,0,0,0.85)] font-mono select-none"
+        >
+          {/* Zoom In */}
+          <button
+            onClick={handleZoomIn}
+            disabled={zoomLevel >= 1.6}
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
+            title="Acercar cámara táctica (Zoom In - Máx 1.6x)"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+
+          {/* Reset / Level Indicator [ ⟲ ] 1:1 */}
+          <button
+            onClick={handleResetZoom}
+            className={`w-8 py-1 flex flex-col items-center justify-center rounded-md border text-[9px] font-black transition-all active:scale-95 cursor-pointer ${
+              Math.abs(zoomLevel - 1.0) < 0.05
+                ? 'bg-slate-900/90 border-slate-700 text-slate-300'
+                : 'bg-cyan-950 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.4)]'
+            }`}
+            title="Restablecer vista táctica 1:1 [ ⟲ ]"
+          >
+            <RotateCcw className="w-2.5 h-2.5 text-cyan-400 mb-0.5" />
+            <span>{Math.round(zoomLevel * 100)}%</span>
+            <span className="text-[7px] text-slate-400 uppercase leading-none">1:1</span>
+          </button>
+
+          {/* Zoom Out */}
+          <button
+            onClick={handleZoomOut}
+            disabled={zoomLevel <= 0.6}
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
+            title="Alejar cámara táctica (Zoom Out - Mín 0.6x)"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+        </aside>
       </div>
 
-      {/* 3. CONSOLA TÁCTICA INFERIOR FIJA (Altura aprox. 200px, Ergonomía de Pulgares) */}
-      <footer className="w-full bg-slate-950/95 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none h-[115px] sm:h-[120px] max-h-[125px]">
+      {/* 3. CONSOLA TÁCTICA INFERIOR FIJA (Ultra-compacta: máximo 115px) */}
+      <footer className="w-full bg-slate-950/95 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none h-[115px] max-h-[115px]">
         <div className="flex items-center justify-between gap-1.5 h-full max-w-xl mx-auto">
           {/* 1. BLOQUE IZQUIERDO (Apuntado): Mini-dial 50px + Ángulo digital + botones finos [-] [+] */}
           <div className="flex flex-col items-center justify-center p-1 bg-slate-900/80 rounded-lg border border-slate-800 w-[85px] sm:w-[95px] shrink-0 h-full">
@@ -1033,36 +1362,160 @@ export default function App() {
           {/* 3. BLOQUE DERECHO (Acción Rápida: Salto & Disparar) */}
           <div className="flex flex-col justify-between gap-1 p-0.5 w-[85px] sm:w-[95px] shrink-0 h-full">
             <button
-              onClick={handleHyperJump}
-              disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion'}
+              onClick={isDefensePending ? () => setShowInitialDefenseModal(true) : handleHyperJump}
+              disabled={isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion' || isDefensePending}
               className={`w-full flex-1 flex items-center justify-center gap-1 font-mono text-[10px] font-black uppercase rounded-lg border transition-all active:scale-95 ${
-                isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion'
+                isSimulating || !!winner || (activeShip?.fuel ?? 0) < 25 || activeShip?.isAI || activeShip?.shieldType === 'bastion' || isDefensePending
                   ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
                   : 'bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 border-amber-400 text-white shadow-[0_0_10px_rgba(245,158,11,0.4)] cursor-pointer'
               }`}
-              title="Salto Orbital a otro planeta (Gasta 25% Combustible)"
+              title={
+                activeShip?.shieldType === 'bastion'
+                  ? 'Bastión Pesado bloquea el hiper-salto'
+                  : isDefensePending
+                    ? 'Fase de Defensa Inicial obligatoria (Turno 1)'
+                    : 'Salto Orbital a otro planeta (Gasta 25% Combustible)'
+              }
             >
               <Zap className="w-3 h-3 text-amber-300 shrink-0" />
               <span>SALTO</span>
             </button>
 
             <button
-              onClick={handleFire}
-              disabled={isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI}
+              onClick={isDefensePending ? () => setShowInitialDefenseModal(true) : handleFire}
+              disabled={isSimulating || !!winner || (!isDefensePending && ((activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI))}
               className={`w-full flex-[1.4] flex items-center justify-center gap-1 font-mono text-xs font-black tracking-wide uppercase rounded-lg border-2 shadow-2xl transition-all active:scale-95 ${
-                isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
-                  ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-600 border-rose-400 text-white shadow-[0_0_14px_rgba(244,63,94,0.6)] cursor-pointer animate-pulse'
+                isDefensePending
+                  ? 'bg-gradient-to-r from-indigo-600 via-cyan-600 to-indigo-700 hover:from-indigo-500 hover:to-cyan-500 border-cyan-400 text-white shadow-[0_0_14px_rgba(6,182,212,0.6)] cursor-pointer animate-pulse'
+                  : isSimulating || !!winner || (activeShip?.credits ?? 0) < activeWeapon.price || activeShip?.isAI
+                    ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-600 border-rose-400 text-white shadow-[0_0_14px_rgba(244,63,94,0.6)] cursor-pointer animate-pulse'
               }`}
-              title="Disparar arma seleccionada"
+              title={isDefensePending ? 'Configura tu escudo defensivo inicial (Turno 1)' : 'Disparar arma seleccionada'}
             >
-              <Target className="w-3.5 h-3.5 shrink-0" />
-              <span>{isSimulating ? 'VUELO' : 'DISPARAR'}</span>
+              {isDefensePending ? (
+                <>
+                  <Shield className="w-3.5 h-3.5 shrink-0 text-cyan-200" />
+                  <span>ESCUDO</span>
+                </>
+              ) : (
+                <>
+                  <Target className="w-3.5 h-3.5 shrink-0" />
+                  <span>{isSimulating ? 'VUELO' : 'DISPARAR'}</span>
+                </>
+              )}
             </button>
           </div>
         </div>
       </footer>
 
+
+      {/* 4. MODAL RETRO FASE DE DEFENSA INICIAL (OBLIGATORIA EN TURNO 1) */}
+      {showInitialDefenseModal && activeShip && !activeShip.isAI && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 z-50 font-mono">
+          <div className="bg-slate-950 border-2 border-cyan-500 rounded-xl max-w-2xl w-full max-h-[92dvh] flex flex-col shadow-[0_0_50px_rgba(6,182,212,0.35)]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 border-b border-cyan-800 bg-slate-900/90">
+              <div className="flex items-center gap-2">
+                <Shield className="w-5 h-5 text-cyan-400 animate-pulse" />
+                <div>
+                  <h2 className="text-xs sm:text-sm font-black tracking-widest text-cyan-300 uppercase">
+                    CONFIGURACIÓN DEFENSIVA INICIAL
+                  </h2>
+                  <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                    <span className="font-bold text-amber-400 uppercase">FASE DE DESPLIEGUE TÁCTICO</span>
+                    <span>•</span>
+                    <span style={{ color: activeShip.color }} className="font-black">
+                      {activeShip.id === 1 ? 'P1 • AZUL' : activeShip.id === 2 ? 'P2 • CARMESÍ' : 'P3 • ÁMBAR'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-amber-400 font-black bg-amber-950/70 px-3 py-1 rounded-md border border-amber-500/70 shadow-sm shrink-0">
+                <Coins className="w-3.5 h-3.5" />
+                <span>{activeShip.credits} CR</span>
+              </div>
+            </div>
+
+            {/* Briefing Notice */}
+            <div className="px-3.5 py-2 bg-cyan-950/40 border-b border-cyan-900/50 text-[11px] text-cyan-200/90 leading-tight">
+              ⚠️ <strong>ORDEN TÁCTICA DEL TURNO 1:</strong> Inspecciona las coordenadas del enemigo en el mapa orbital y equipa la matriz de escudos de tu nave antes del primer disparo. El <span className="text-emerald-400 font-bold">Deflector Estándar es 100% GRATIS (0 CR)</span>. Los escudos tácticos avanzados gastan parte de tus 300 CR iniciales.
+            </div>
+
+            {/* Grid of the 8 Canonical Shields */}
+            <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 overflow-y-auto max-h-[58vh]">
+              {SHIELD_CATALOG.map((s) => {
+                const isSelected = activeShip.shieldType === s.id;
+                const canAfford = activeShip.credits >= s.price;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      selectShield(s.id);
+                    }}
+                    disabled={!canAfford && !isSelected}
+                    className={`flex flex-col text-left p-2.5 rounded-lg border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-cyan-950/90 border-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.4)] ring-1 ring-cyan-400'
+                        : canAfford
+                          ? 'bg-slate-900/90 border-slate-800 hover:border-cyan-600 hover:bg-slate-850'
+                          : 'bg-slate-950/60 border-slate-900 opacity-40 cursor-not-allowed'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                        <span className="font-bold text-xs text-white uppercase">{s.name}</span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        s.price === 0
+                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : 'bg-amber-950 text-amber-400 border border-amber-800'
+                      }`}>
+                        {s.price === 0 ? 'GRATIS' : `${s.price} CR`}
+                      </span>
+                    </div>
+
+                    <p className="text-[10px] text-slate-300 leading-relaxed mb-2">
+                      {s.description}
+                    </p>
+
+                    <div className="mt-auto flex items-center justify-between text-[9px] pt-1.5 border-t border-slate-800/80">
+                      <span className="text-cyan-400 font-medium">{s.effect}</span>
+                      {isSelected ? (
+                        <span className="text-emerald-400 font-bold flex items-center gap-0.5">
+                          ✓ SELECCIONADO
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 hover:text-cyan-300 font-bold">
+                          {canAfford ? 'ELEGIR' : 'SIN FONDOS'}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Bottom Actions */}
+            <div className="p-3 border-t border-cyan-900/70 bg-slate-900/90 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <button
+                onClick={() => handleConfirmInitialDefense('deflector')}
+                className="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-600 text-xs font-bold transition-all cursor-pointer"
+              >
+                Continuar con Deflector Estándar (Gratis)
+              </button>
+              <button
+                onClick={() => handleConfirmInitialDefense()}
+                className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-cyan-600 via-teal-500 to-cyan-600 hover:from-cyan-500 hover:to-teal-400 text-white font-black text-xs sm:text-sm tracking-wider uppercase rounded-lg border border-cyan-300 shadow-[0_0_20px_rgba(6,182,212,0.5)] transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Shield className="w-4 h-4 text-cyan-200" />
+                <span>CONFIRMAR ESCUDO Y HABILITAR DISPARO</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL MATRIZ DE ESCUDOS (8 ESCUDOS CANÓNICOS) */}
       {showShieldMatrix && (

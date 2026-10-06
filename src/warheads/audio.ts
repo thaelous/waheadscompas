@@ -341,6 +341,44 @@ class SoundEngine {
       osc.stop(noteTime + dur);
     });
   }
+
+  /**
+   * Tactical military planetary scanner chirp and resonant sweep
+   */
+  public playScanner() {
+    if (this.isMuted) return;
+    this.initContext();
+    if (!this.ctx) return;
+
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const subOsc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    subOsc.type = 'triangle';
+
+    // Rapid tactical telemetry pitch sweep
+    osc.frequency.setValueAtTime(620, t);
+    osc.frequency.exponentialRampToValueAtTime(1480, t + 0.12);
+    osc.frequency.exponentialRampToValueAtTime(880, t + 0.25);
+
+    subOsc.frequency.setValueAtTime(310, t);
+    subOsc.frequency.exponentialRampToValueAtTime(740, t + 0.12);
+
+    gain.gain.setValueAtTime(0.01, t);
+    gain.gain.linearRampToValueAtTime(0.14, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+
+    osc.connect(gain);
+    subOsc.connect(gain);
+    gain.connect(this.ctx.destination);
+
+    osc.start(t);
+    subOsc.start(t);
+    osc.stop(t + 0.28);
+    subOsc.stop(t + 0.28);
+  }
 }
 
 export const sound = new SoundEngine();
