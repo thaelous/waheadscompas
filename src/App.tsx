@@ -354,7 +354,8 @@ export default function App() {
         const currentDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
         if (initialPinchDist > 8) {
           const factor = currentDist / initialPinchDist;
-          engineRef.current.setZoom(initialZoom * factor);
+          const targetZoom = Math.max(0.55, Math.min(1.0, initialZoom * factor));
+          engineRef.current.setZoom(targetZoom);
           const currentMidX = (t0.clientX + t1.clientX) / 2;
           const currentMidY = (t0.clientY + t1.clientY) / 2;
           engineRef.current.panX = Math.max(-280, Math.min(280, initialPan.x + (currentMidX - initialCenter.x)));
@@ -788,24 +789,24 @@ export default function App() {
     });
   };
 
-  // Tactical Zoom Manual Handlers
+  // Tactical Zoom Manual Handlers (0.55x a 1.0x estrictos, cero over-zoom)
   const handleZoomIn = useCallback(() => {
-    if (engineRef.current) {
+    if (engineRef.current && zoomLevel < 1.0) {
       engineRef.current.zoomIn(0.15);
       setZoomLevel(engineRef.current.userZoom);
       triggerHaptic(15);
       sound.playDialTick();
     }
-  }, [triggerHaptic]);
+  }, [zoomLevel, triggerHaptic]);
 
   const handleZoomOut = useCallback(() => {
-    if (engineRef.current) {
+    if (engineRef.current && zoomLevel > 0.55) {
       engineRef.current.zoomOut(0.15);
       setZoomLevel(engineRef.current.userZoom);
       triggerHaptic(15);
       sound.playDialTick();
     }
-  }, [triggerHaptic]);
+  }, [zoomLevel, triggerHaptic]);
 
   const handleResetZoom = useCallback(() => {
     if (engineRef.current) {
@@ -1217,9 +1218,9 @@ export default function App() {
           {/* Zoom In */}
           <button
             onClick={handleZoomIn}
-            disabled={zoomLevel >= 1.6}
+            disabled={zoomLevel >= 1.0}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
-            title="Acercar cámara táctica (Zoom In - Máx 1.6x)"
+            title="Acercar cámara táctica (Zoom In - Máx 1.0x / 100%)"
           >
             <ZoomIn className="w-4 h-4" />
           </button>
@@ -1242,9 +1243,9 @@ export default function App() {
           {/* Zoom Out */}
           <button
             onClick={handleZoomOut}
-            disabled={zoomLevel <= 0.6}
+            disabled={zoomLevel <= 0.55}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
-            title="Alejar cámara táctica (Zoom Out - Mín 0.6x)"
+            title="Alejar cámara táctica (Zoom Out - Mín 0.55x)"
           >
             <ZoomOut className="w-4 h-4" />
           </button>

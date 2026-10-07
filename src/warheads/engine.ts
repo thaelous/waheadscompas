@@ -15,7 +15,7 @@ import {
 import { WeaponDef, WEAPON_CATALOG } from './weapons';
 import { sound } from './audio';
 
-export const G_CONSTANT = 2200; // Gravitational constant scale with Plummer softening
+export const G_CONSTANT = 1100; // Calibrated gravitational constant ensuring escape velocity at >=80% power
 export const PLUMMER_EPSILON_SQ = 625; // Plummer softening epsilon = 25 pixels (25^2 = 625)
 
 export type PlayerId = 1 | 2 | 3;
@@ -293,22 +293,25 @@ export class WarHeadsEngine {
   public onGameOver?: (winner: PlayerId | 'draw') => void;
   public onCoinCollected?: (playerId: PlayerId, amount: number) => void;
 
-  // Tactical Manual Zoom & Pan System (100% Player Controlled, 0.6x to 1.6x)
+  // Tactical Manual Zoom & Pan System (0.55x to 1.0x - Cero Over-Zoom, tope máximo 100%)
   public userZoom: number = 1.0;
   public panX: number = 0;
   public panY: number = 0;
 
   public setZoom(zoom: number) {
-    this.userZoom = Math.max(0.6, Math.min(1.6, Math.round(zoom * 100) / 100));
+    // Rango estricto: 0.55x (vista general) a 1.0x (100% nativo). Zoom > 1.0 bloqueado terminantemente.
+    this.userZoom = Math.max(0.55, Math.min(1.0, Math.round(zoom * 100) / 100));
     this.onStateUpdate?.();
   }
 
   public zoomIn(delta: number = 0.15) {
-    this.setZoom(this.userZoom + delta);
+    if (this.userZoom >= 1.0) return;
+    this.setZoom(Math.min(1.0, this.userZoom + delta));
   }
 
   public zoomOut(delta: number = 0.15) {
-    this.setZoom(this.userZoom - delta);
+    if (this.userZoom <= 0.55) return;
+    this.setZoom(Math.max(0.55, this.userZoom - delta));
   }
 
   public resetZoom() {
@@ -941,7 +944,9 @@ export class WarHeadsEngine {
     currentShip.credits -= weapon.price;
 
     const rad = (currentShip.aimAngle * Math.PI) / 180;
-    const baseSpeed = (currentShip.power * 0.082 + 1.2) * weapon.speedMultiplier;
+    // Calibrated Power Curve:
+    // 10%-40%: suborbital arcs; 50%-75%: stable slingshots/orbits; >=80%: guaranteed hyperbolic escape velocity
+    const baseSpeed = (currentShip.power * 0.165 + 2.2) * weapon.speedMultiplier;
 
     const barrelLen = 22;
     const startX = currentShip.x + Math.cos(rad) * barrelLen;
@@ -1033,16 +1038,23 @@ export class WarHeadsEngine {
     currentShip.fuel = Math.max(0, currentShip.fuel - 30);
 
     const rad = (currentShip.aimAngle * Math.PI) / 180;
-    const jumpSpeed = (currentShip.power * 0.075 + 1.6);
+    // Calibración de impulso hiperbólico para salto orbital
+    const jumpSpeed = currentShip.power * 0.155 + 3.5;
+    const liftoffMargin = 16 + (currentShip.power >= 70 ? 8 : 4);
+    const liftoffVel = 2.5 + (currentShip.power >= 70 ? 3.0 : 1.0);
 
-    currentShip.vx = Math.cos(rad) * jumpSpeed;
-    currentShip.vy = -Math.sin(rad) * jumpSpeed;
+    // Bonificación base de despegue vertical para vencer la inercia estática inicial
+    currentShip.x += Math.cos(currentShip.surfaceAngle) * liftoffMargin;
+    currentShip.y += Math.sin(currentShip.surfaceAngle) * liftoffMargin;
+
+    currentShip.vx = Math.cos(rad) * jumpSpeed + Math.cos(currentShip.surfaceAngle) * liftoffVel;
+    currentShip.vy = -Math.sin(rad) * jumpSpeed + Math.sin(currentShip.surfaceAngle) * liftoffVel;
     currentShip.isAirborne = true;
     currentShip.flightTime = 0;
     currentShip.jumpTrail = [];
 
-    currentShip.x += currentShip.vx * 2;
-    currentShip.y += currentShip.vy * 2;
+    currentShip.x += currentShip.vx * 1.5;
+    currentShip.y += currentShip.vy * 1.5;
 
     sound.playHyperJump();
 
@@ -1285,11 +1297,31 @@ export class WarHeadsEngine {
       const effectiveRadius = w.craterRadius * 1.5 + 24;
 
       if (sDist < effectiveRadius) {
-        // Fórmula de Daño Cuadrático Inverso por Onda Expansiva:
-        // Daño = DañoMax * (1 - dist / RadioExplosion)^2
-        const ratio = sDist / effectiveRadius;
-        const falloff = Math.pow(Math.max(0, 1 - ratio), 2);
-        const rawDmg = Math.round(w.damage * falloff);
+        // ZONAS DE IMPACTO Y DAÑO DIFERENCIADO:
+        // 1. Direct Hit (sDist <= 14px): 100% daño base
+        // 2. Glancing Hit (14px < sDist <= 28px): 50%-65% daño base (58%)
+        // 3. Blast Radius (sDist > 28px): Onda expansiva cuadrática inversa suave
+        // 4. Metralla / Esquirla: Daños ligeros de entre 15 y 30 HP
+        let zoneMultiplier = 1.0;
+        const isShrapnel = w.specialBehavior === 'shrapnel' || w.name === 'Dardo de Metralla';
+
+        if (isShrapnel) {
+          zoneMultiplier = 1.0;
+        } else if (sDist <= 14) {
+          zoneMultiplier = 1.0; // Direct Hit
+        } else if (sDist <= 28) {
+          zoneMultiplier = 0.58; // Glancing Hit
+        } else {
+          const ratio = (sDist - 28) / Math.max(1, effectiveRadius - 28);
+          zoneMultiplier = Math.pow(Math.max(0, 1 - ratio), 2) * 0.50; // Blast Radius
+        }
+
+        // LÍMITE DE DAÑO ABSOLUTO (DAMAGE CAP):
+        // Ningún impacto individual puede infligir más de 450 HP de daño total.
+        // Imposible matar de 1 disparo (se requieren entre 5 y 9 impactos certeros).
+        const maxDamageCap = isShrapnel ? 30 : 450;
+        const calculatedDmg = Math.round(w.damage * zoneMultiplier);
+        const rawDmg = Math.min(maxDamageCap, calculatedDmg);
 
         ship.lastHitTime = performance.now();
         const prevShield = ship.shield;
@@ -1330,9 +1362,9 @@ export class WarHeadsEngine {
           if (ship.shieldType === 'phase' && w.category === 'ballistic') {
             continue; // Atraviesa sin daño
           }
-          // Cuántico de Fase: recibe daño doble por antimateria y armas exóticas
+          // Cuántico de Fase: recibe daño aumentado por antimateria y armas exóticas
           if (ship.shieldType === 'phase' && (w.category === 'exotic' || w.specialBehavior === 'singularity' || w.specialBehavior === 'void')) {
-            dmgToApply = Math.round(dmgToApply * 2);
+            dmgToApply = Math.min(maxDamageCap, Math.round(dmgToApply * 1.6));
           }
 
           // Colector / Absorción: Convierte 60% del daño en recarga de combustible (+35%) y +30 CR
@@ -1351,14 +1383,14 @@ export class WarHeadsEngine {
             dmgToApply -= actualAbsorbed;
           } else if (ship.shield > 0) {
             // Deflector Estándar y escudos normales absorben el 70% del daño entrante antes de tocar el casco
-            const shieldAbsorbable = Math.round(dmgToApply * 0.7);
+            const shieldAbsorbable = Math.round(dmgToApply * 0.70);
             const actualAbsorbed = Math.min(ship.shield, shieldAbsorbable);
             ship.shield -= actualAbsorbed;
             dmgToApply -= actualAbsorbed;
           }
 
-          // Resistencia a Daño Crítico: NINGÚN arma en el juego puede quitar más de 300 a 350 HP de un solo golpe
-          dmgToApply = Math.min(320, dmgToApply);
+          // Tope máximo por impacto individual: nunca excede 450 HP (cero one-hit kills)
+          dmgToApply = Math.min(450, dmgToApply);
           finalHpLoss = Math.min(ship.hp, dmgToApply);
           ship.hp = Math.max(0, ship.hp - dmgToApply);
         }
