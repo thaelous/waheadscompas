@@ -354,7 +354,7 @@ export default function App() {
         const currentDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
         if (initialPinchDist > 8) {
           const factor = currentDist / initialPinchDist;
-          const targetZoom = Math.max(0.55, Math.min(1.0, initialZoom * factor));
+          const targetZoom = Math.max(1.0, Math.min(4.0, initialZoom * factor));
           engineRef.current.setZoom(targetZoom);
           const currentMidX = (t0.clientX + t1.clientX) / 2;
           const currentMidY = (t0.clientY + t1.clientY) / 2;
@@ -789,10 +789,10 @@ export default function App() {
     });
   };
 
-  // Tactical Zoom Manual Handlers (0.55x a 1.0x estrictos, cero over-zoom)
+  // Tactical Zoom Manual Handlers (1.0x a 4.0x estrictos, cero zoom < 1.0x)
   const handleZoomIn = useCallback(() => {
-    if (engineRef.current && zoomLevel < 1.0) {
-      engineRef.current.zoomIn(0.15);
+    if (engineRef.current && zoomLevel < 4.0) {
+      engineRef.current.zoomIn(0.25);
       setZoomLevel(engineRef.current.userZoom);
       triggerHaptic(15);
       sound.playDialTick();
@@ -800,8 +800,8 @@ export default function App() {
   }, [zoomLevel, triggerHaptic]);
 
   const handleZoomOut = useCallback(() => {
-    if (engineRef.current && zoomLevel > 0.55) {
-      engineRef.current.zoomOut(0.15);
+    if (engineRef.current && zoomLevel > 1.0) {
+      engineRef.current.zoomOut(0.25);
       setZoomLevel(engineRef.current.userZoom);
       triggerHaptic(15);
       sound.playDialTick();
@@ -979,13 +979,13 @@ export default function App() {
         </div>
       )}
 
-      {/* 1. BARRA SUPERIOR FIJA ULTRA-COMPACTA (36px de alto) */}
+      {/* 1. BARRA SUPERIOR FIJA ULTRA-COMPACTA (32px de alto) */}
       <header
-        className="h-[36px] max-h-[36px] min-h-[36px] w-full px-2.5 flex items-center justify-between bg-black/90 backdrop-blur-sm border-b border-cyan-900/60 shadow-md z-20 shrink-0 font-mono text-[11px] select-none"
+        className="h-[32px] max-h-[32px] min-h-[32px] w-full px-2.5 flex items-center justify-between bg-black/90 backdrop-blur-sm border-b border-cyan-900/60 shadow-md z-20 shrink-0 font-mono text-[11px] select-none"
         style={{
-          height: '36px',
-          maxHeight: '36px',
-          minHeight: '36px',
+          height: '32px',
+          maxHeight: '32px',
+          minHeight: '32px',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
@@ -1012,7 +1012,7 @@ export default function App() {
           </span>
         </div>
 
-        {/* Centro: Datos vitales en fila ordenada sin amontonar: HP:1000  ESC:500  COM:100%  300 CR */}
+        {/* Centro: Datos vitales en fila ordenada sin amontonar: HP:2200  ESC:1000  COM:100%  300 CR */}
         <div className="flex items-center gap-2 sm:gap-3.5 font-bold text-[10px] sm:text-[11px] shrink-0">
           <span className="text-emerald-400">HP:{activeShip?.hp ?? 0}</span>
           <span className="text-cyan-400">ESC:{activeShip?.shield ?? 0}</span>
@@ -1020,28 +1020,28 @@ export default function App() {
           <span className="text-amber-400 font-black">{activeShip?.credits ?? 0} CR</span>
         </div>
 
-        {/* Lado Derecho: Grupo compacto de botones de utilidad con tamaño uniforme (30x30px) */}
+        {/* Lado Derecho: Grupo compacto de botones de utilidad con tamaño uniforme (26x26px) */}
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => {
               const muted = sound.toggleMute();
               setIsMuted(muted);
             }}
-            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-slate-300 hover:text-cyan-400 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
+            className="w-[26px] h-[26px] min-w-[26px] flex items-center justify-center text-slate-300 hover:text-cyan-400 bg-slate-900/90 border border-slate-700/80 rounded-md transition-colors cursor-pointer"
             title={isMuted ? 'Activar Sonido' : 'Silenciar'}
           >
             {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-cyan-400" />}
           </button>
           <button
             onClick={() => handleRestart()}
-            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-amber-400 hover:text-amber-300 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
+            className="w-[26px] h-[26px] min-w-[26px] flex items-center justify-center text-amber-400 hover:text-amber-300 bg-slate-900/90 border border-slate-700/80 rounded-md transition-colors cursor-pointer"
             title="Reiniciar / Nuevo Sistema Estelar"
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setShowHangarModal(true)}
-            className="w-[30px] h-[30px] min-w-[30px] flex items-center justify-center text-cyan-400 hover:text-cyan-300 bg-slate-900/90 border border-slate-700/80 rounded-lg transition-colors cursor-pointer"
+            className="w-[26px] h-[26px] min-w-[26px] flex items-center justify-center text-cyan-400 hover:text-cyan-300 bg-slate-900/90 border border-slate-700/80 rounded-md transition-colors cursor-pointer"
             title="Ajustes / Hangar"
           >
             <Settings className="w-3.5 h-3.5" />
@@ -1218,9 +1218,9 @@ export default function App() {
           {/* Zoom In */}
           <button
             onClick={handleZoomIn}
-            disabled={zoomLevel >= 1.0}
+            disabled={zoomLevel >= 4.0}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
-            title="Acercar cámara táctica (Zoom In - Máx 1.0x / 100%)"
+            title="Acercar cámara táctica (Zoom In - Máx 4.0x / 400%)"
           >
             <ZoomIn className="w-4 h-4" />
           </button>
@@ -1243,18 +1243,18 @@ export default function App() {
           {/* Zoom Out */}
           <button
             onClick={handleZoomOut}
-            disabled={zoomLevel <= 0.55}
+            disabled={zoomLevel <= 1.0}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/90 hover:bg-cyan-950 border border-cyan-700/70 text-cyan-300 hover:text-cyan-100 disabled:opacity-30 disabled:hover:bg-slate-900 transition-all active:scale-95 shadow cursor-pointer"
-            title="Alejar cámara táctica (Zoom Out - Mín 0.55x)"
+            title="Alejar cámara táctica (Zoom Out - Mín 1.0x / 100%)"
           >
             <ZoomOut className="w-4 h-4" />
           </button>
         </aside>
       </div>
 
-      {/* 3. CONSOLA TÁCTICA INFERIOR FIJA (Ultra-compacta: máximo 115px) */}
-      <footer className="w-full bg-slate-950/95 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none h-[115px] max-h-[115px]">
-        <div className="flex items-center justify-between gap-1.5 h-full max-w-xl mx-auto">
+      {/* 3. CONSOLA TÁCTICA INFERIOR FIJA (Ultra-compacta: máximo 115px en móvil, terminal bajo en escritorio) */}
+      <footer className="w-full bg-slate-950/95 border-t border-cyan-900/80 px-2 py-1 shadow-2xl z-20 shrink-0 font-mono select-none h-[115px] max-h-[115px] md:h-[95px] md:max-h-[95px]">
+        <div className="flex items-center justify-between gap-1.5 h-full max-w-xl md:max-w-3xl mx-auto">
           {/* 1. BLOQUE IZQUIERDO (Apuntado): Mini-dial 50px + Ángulo digital + botones finos [-] [+] */}
           <div className="flex flex-col items-center justify-center p-1 bg-slate-900/80 rounded-lg border border-slate-800 w-[85px] sm:w-[95px] shrink-0 h-full">
             <div className="text-[10px] sm:text-[11px] font-black text-cyan-300 tabular-nums leading-none mb-0.5">

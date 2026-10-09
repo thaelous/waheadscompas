@@ -15,7 +15,7 @@ import {
 import { WeaponDef, WEAPON_CATALOG } from './weapons';
 import { sound } from './audio';
 
-export const G_CONSTANT = 1100; // Calibrated gravitational constant ensuring escape velocity at >=80% power
+export const G_CONSTANT = 360; // Constante gravitatoria calibrada para balística pausada, órbitas dramáticas a 30%-75% y escape a >=80%
 export const PLUMMER_EPSILON_SQ = 625; // Plummer softening epsilon = 25 pixels (25^2 = 625)
 
 export type PlayerId = 1 | 2 | 3;
@@ -151,6 +151,7 @@ export interface Ship {
   jumpTrail: { x: number; y: number; alpha: number }[];
   shieldType: ShieldType;
   lastHitTime?: number;
+  turnDamageTaken?: number; // Blindaje estricto: tope máximo de 350 HP por turno
 }
 
 
@@ -196,6 +197,7 @@ export interface Projectile {
   crawlerPlanetId?: number;
   crawlerAngle?: number;
   splitTriggered?: boolean;
+  hasDetonated?: boolean; // Bandera de Impacto Único: previene impactos múltiples en substepping
 }
 
 export interface Particle {
@@ -299,19 +301,19 @@ export class WarHeadsEngine {
   public panY: number = 0;
 
   public setZoom(zoom: number) {
-    // Rango estricto: 0.55x (vista general) a 1.0x (100% nativo). Zoom > 1.0 bloqueado terminantemente.
-    this.userZoom = Math.max(0.55, Math.min(1.0, Math.round(zoom * 100) / 100));
+    // Rango estricto calibrado: 1.0x (100% base nativa) a 4.0x (inspección cercana profunda). PROHIBIDO alejar por debajo de 1.0x.
+    this.userZoom = Math.max(1.0, Math.min(4.0, Math.round(zoom * 100) / 100));
     this.onStateUpdate?.();
   }
 
-  public zoomIn(delta: number = 0.15) {
-    if (this.userZoom >= 1.0) return;
-    this.setZoom(Math.min(1.0, this.userZoom + delta));
+  public zoomIn(delta: number = 0.25) {
+    if (this.userZoom >= 4.0) return;
+    this.setZoom(Math.min(4.0, this.userZoom + delta));
   }
 
-  public zoomOut(delta: number = 0.15) {
-    if (this.userZoom <= 0.55) return;
-    this.setZoom(Math.max(0.55, this.userZoom - delta));
+  public zoomOut(delta: number = 0.25) {
+    if (this.userZoom <= 1.0) return;
+    this.setZoom(Math.max(1.0, this.userZoom - delta));
   }
 
   public resetZoom() {
@@ -368,9 +370,18 @@ export class WarHeadsEngine {
     this.canvas = canvas;
     const clientW = canvas.clientWidth || 390;
     const clientH = canvas.clientHeight || 650;
-    this.scale = clientW / 900;
-    this.width = 900;
-    this.height = Math.round(clientH / this.scale);
+    const isDesktop = clientW >= 900;
+
+    if (isDesktop) {
+      this.scale = 1.0;
+      this.width = Math.max(1200, clientW);
+      this.height = Math.max(700, clientH);
+    } else {
+      this.scale = clientW / 900;
+      this.width = 900;
+      this.height = Math.round(clientH / this.scale);
+    }
+
     this.canvas.width = clientW;
     this.canvas.height = clientH;
     this.ctx = canvas.getContext('2d', { willReadFrequently: true })!;
@@ -382,12 +393,22 @@ export class WarHeadsEngine {
 
   public resize(clientW: number, clientH: number) {
     if (clientW <= 0 || clientH <= 0) return;
-    const newScale = clientW / 900;
-    const newHeight = Math.round(clientH / newScale);
+    const isDesktop = clientW >= 900;
+    let newWidth = 900;
+    let newScale = clientW / 900;
+    let newHeight = Math.round(clientH / newScale);
+
+    if (isDesktop) {
+      newScale = 1.0;
+      newWidth = Math.max(1200, clientW);
+      newHeight = Math.max(700, clientH);
+    }
+
     this.scale = newScale;
     this.canvas.width = clientW;
     this.canvas.height = clientH;
-    if (Math.abs(this.height - newHeight) > 12) {
+    if (Math.abs(this.width - newWidth) > 20 || Math.abs(this.height - newHeight) > 12) {
+      this.width = newWidth;
       this.height = newHeight;
       this.initStars();
     }
@@ -536,26 +557,32 @@ export class WarHeadsEngine {
 
     // Sembrar P1 en Sector 0 (Top-Left)
     const sec0 = sectors[0];
-    for (let attempt = 0; attempt < 80; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
       const rad = Math.floor(28 + rng() * 20); // 28px a 48px
       const cx = sec0.minX + rng() * (sec0.maxX - sec0.minX);
       const cy = sec0.minY + rng() * (sec0.maxY - sec0.minY);
       if (isValidSample(cx, cy, rad)) {
-        samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
-        break;
+        if (Math.hypot(maxX - cx, maxY - cy) >= minRequiredShipDistance + 100) {
+          samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
+          break;
+        }
       }
     }
+    if (samples.length === 0) {
+      const rad = 30;
+      samples.push({ x: Math.round(sec0.minX + rad + 15), y: Math.round(sec0.minY + rad + 15), radius: rad, type: pickMaterial(rad, 0) });
+    }
 
-    // Sembrar P2 en Sector 1 (Bottom-Right) con holgura diagonal garantizada
+    // Sembrar P2 en Sector 1 (Bottom-Right) con holgura diagonal garantizada >= 55%
     const sec1 = sectors[1];
     let p2Placed = false;
-    for (let attempt = 0; attempt < 120; attempt++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
       const rad = Math.floor(28 + rng() * 20);
       const cx = sec1.minX + rng() * (sec1.maxX - sec1.minX);
       const cy = sec1.minY + rng() * (sec1.maxY - sec1.minY);
       if (isValidSample(cx, cy, rad)) {
         const centerDist = Math.hypot(cx - samples[0].x, cy - samples[0].y);
-        if (centerDist >= minRequiredShipDistance + 60) {
+        if (centerDist >= minRequiredShipDistance + 40) {
           samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
           p2Placed = true;
           break;
@@ -563,15 +590,24 @@ export class WarHeadsEngine {
       }
     }
     if (!p2Placed) {
-      for (let attempt = 0; attempt < 80; attempt++) {
-        const rad = Math.floor(28 + rng() * 20);
-        const cx = sec1.minX + rng() * (sec1.maxX - sec1.minX);
-        const cy = sec1.minY + rng() * (sec1.maxY - sec1.minY);
-        if (isValidSample(cx, cy, rad)) {
-          samples.push({ x: Math.round(cx), y: Math.round(cy), radius: rad, type: pickMaterial(rad, samples.length) });
-          break;
+      for (let fY = sec1.maxY - 35; fY >= sec1.minY; fY -= 15) {
+        for (let fX = sec1.maxX - 35; fX >= sec1.minX; fX -= 15) {
+          const rad = 28;
+          if (isValidSample(fX, fY, rad)) {
+            const centerDist = Math.hypot(fX - samples[0].x, fY - samples[0].y);
+            if (centerDist >= minRequiredShipDistance + 20) {
+              samples.push({ x: Math.round(fX), y: Math.round(fY), radius: rad, type: pickMaterial(rad, samples.length) });
+              p2Placed = true;
+              break;
+            }
+          }
         }
+        if (p2Placed) break;
       }
+    }
+    if (!p2Placed) {
+      const rad = 28;
+      samples.push({ x: Math.round(sec1.maxX - 35), y: Math.round(sec1.maxY - 35), radius: rad, type: pickMaterial(rad, samples.length) });
     }
 
     // 2. Muestreo de Poisson Disk anular y por sectores para completar la distribución equitativa
@@ -752,81 +788,88 @@ export class WarHeadsEngine {
     }
 
     // 3. Spawning Táctico de Naves en Cuadrantes Opuestos (P1 Top-Left, P2 Bottom-Right)
-    // - P1 forzado al Cuadrante Superior Izquierdo (Top-Left: x < w/2, y < h/2)
-    // - P2 forzado al Cuadrante Inferior Derecho (Bottom-Right: x > w/2, y > h/2)
-    // - Planetas distintos garantizados (NUNCA en gigantes gaseosos)
+    // - P1 forzado al Cuadrante Superior Izquierdo (Top-Left: x < arenaCenterX && y < arenaCenterY)
+    // - P2 forzado al Cuadrante Inferior Derecho (Bottom-Right: x > arenaCenterX && y > arenaCenterY)
+    // - Planetas distintos garantizados (NUNCA en gigantes gaseosos: p1Planet.id !== p2Planet.id)
     // - Distancia lineal mínima garantizada de al menos el 55% de la diagonal del canvas
     const count = this.gameConfig.playerCount;
     const solidPlanets = this.planets.filter(p => !p.material.isGas);
     const candidatePlanets = solidPlanets.length >= 2 ? solidPlanets : this.planets;
 
-    // 1. Planeta para Jugador 1: Cuadrante Superior Izquierdo (Top-Left)
-    const topLeftPlanets = candidatePlanets.filter(p => p.x < arenaCenterX && p.y < arenaCenterY);
-    let p1Planet = topLeftPlanets.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y))[0];
-    if (!p1Planet) {
-      p1Planet = candidatePlanets.slice().sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y))[0];
-    }
-
-    // 2. Planeta para Jugador 2: Cuadrante Inferior Derecho (Bottom-Right), estrictamente DISTINTO a P1
-    const bottomRightPlanets = candidatePlanets.filter(p => p.id !== p1Planet.id && p.x > arenaCenterX && p.y > arenaCenterY);
-    let p2Planet = bottomRightPlanets.slice().sort((a, b) => (b.x + b.y) - (a.x + a.y))[0];
-    if (!p2Planet) {
-      p2Planet = candidatePlanets.filter(p => p.id !== p1Planet.id).slice().sort((a, b) => Math.hypot(w - a.x, h - a.y) - Math.hypot(w - b.x, h - b.y))[0] || candidatePlanets[1];
-    }
-
-    // 3. Planeta para Jugador 3 (si hay 3 jugadores): planeta distinto a P1 y P2
-    let p3Planet: Planet | undefined;
-    if (count >= 3) {
-      p3Planet = candidatePlanets.find(p => p.id !== p1Planet.id && p.id !== p2Planet.id) || candidatePlanets[0];
-    }
-
-    // Optimización de ángulos orbitales para P1 y P2:
-    // Asegura que P1 quede en Top-Left, P2 en Bottom-Right, y dist(P1, P2) >= 55% diagonal
+    let p1Planet = candidatePlanets[0];
+    let p2Planet = candidatePlanets[1] || candidatePlanets[0];
     let sAngle1 = Math.PI * 0.25;
     let sAngle2 = -Math.PI * 0.75;
     let bestScore = -Infinity;
 
-    for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
-      const x1 = p1Planet.x + Math.cos(a1) * (p1Planet.radius + 10);
-      const y1 = p1Planet.y + Math.sin(a1) * (p1Planet.radius + 10);
-      if (x1 >= arenaCenterX || y1 >= arenaCenterY) continue; // P1 en cuadrante superior izquierdo
+    // Búsqueda exhaustiva del mejor par de planetas y ángulos de spawn:
+    for (const pl1 of candidatePlanets) {
+      for (const pl2 of candidatePlanets) {
+        if (pl1.id === pl2.id) continue; // Estrictamente planetas distintos
 
-      for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
-        const x2 = p2Planet.x + Math.cos(a2) * (p2Planet.radius + 10);
-        const y2 = p2Planet.y + Math.sin(a2) * (p2Planet.radius + 10);
-        if (x2 <= arenaCenterX || y2 <= arenaCenterY) continue; // P2 en cuadrante inferior derecho
+        for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
+          const x1 = pl1.x + Math.cos(a1) * (pl1.radius + 10);
+          const y1 = pl1.y + Math.sin(a1) * (pl1.radius + 10);
+          if (x1 >= arenaCenterX || y1 >= arenaCenterY) continue; // P1 estrictamente en cuadrante Top-Left
 
-        const d = Math.hypot(x2 - x1, y2 - y1);
-        if (d >= minRequiredShipDistance + 1.0) {
-          const inward1 = Math.cos(a1 - Math.atan2(arenaCenterY - p1Planet.y, arenaCenterX - p1Planet.x));
-          const inward2 = Math.cos(a2 - Math.atan2(arenaCenterY - p2Planet.y, arenaCenterX - p2Planet.x));
-          const score = d + (inward1 + inward2) * 50;
-          if (score > bestScore) {
-            bestScore = score;
-            sAngle1 = a1;
-            sAngle2 = a2;
+          for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
+            const x2 = pl2.x + Math.cos(a2) * (pl2.radius + 10);
+            const y2 = pl2.y + Math.sin(a2) * (pl2.radius + 10);
+            if (x2 <= arenaCenterX || y2 <= arenaCenterY) continue; // P2 estrictamente en cuadrante Bottom-Right
+
+            const d = Math.hypot(x2 - x1, y2 - y1);
+            if (d >= minRequiredShipDistance) {
+              const inward1 = Math.cos(a1 - Math.atan2(arenaCenterY - pl1.y, arenaCenterX - pl1.x));
+              const inward2 = Math.cos(a2 - Math.atan2(arenaCenterY - pl2.y, arenaCenterX - pl2.x));
+              const score = d + (inward1 + inward2) * 50;
+              if (score > bestScore) {
+                bestScore = score;
+                p1Planet = pl1;
+                p2Planet = pl2;
+                sAngle1 = a1;
+                sAngle2 = a2;
+              }
+            }
           }
         }
       }
     }
 
-    // Fallback de seguridad: maximizar distancia lineal garantizada
+    // Fallback de contingencia: maximizar distancia respetando cuadrantes y planetas distintos
     if (bestScore === -Infinity) {
       let maxDistFound = 0;
-      for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
-        const x1 = p1Planet.x + Math.cos(a1) * (p1Planet.radius + 10);
-        const y1 = p1Planet.y + Math.sin(a1) * (p1Planet.radius + 10);
-        for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
-          const x2 = p2Planet.x + Math.cos(a2) * (p2Planet.radius + 10);
-          const y2 = p2Planet.y + Math.sin(a2) * (p2Planet.radius + 10);
-          const d = Math.hypot(x2 - x1, y2 - y1);
-          if (d > maxDistFound) {
-            maxDistFound = d;
-            sAngle1 = a1;
-            sAngle2 = a2;
+      for (const pl1 of candidatePlanets) {
+        for (const pl2 of candidatePlanets) {
+          if (pl1.id === pl2.id) continue;
+
+          for (let a1 = 0; a1 < Math.PI * 2; a1 += Math.PI / 36) {
+            const x1 = pl1.x + Math.cos(a1) * (pl1.radius + 10);
+            const y1 = pl1.y + Math.sin(a1) * (pl1.radius + 10);
+            if (x1 >= arenaCenterX || y1 >= arenaCenterY) continue;
+
+            for (let a2 = 0; a2 < Math.PI * 2; a2 += Math.PI / 36) {
+              const x2 = pl2.x + Math.cos(a2) * (pl2.radius + 10);
+              const y2 = pl2.y + Math.sin(a2) * (pl2.radius + 10);
+              if (x2 <= arenaCenterX || y2 <= arenaCenterY) continue;
+
+              const d = Math.hypot(x2 - x1, y2 - y1);
+              if (d > maxDistFound) {
+                maxDistFound = d;
+                p1Planet = pl1;
+                p2Planet = pl2;
+                sAngle1 = a1;
+                sAngle2 = a2;
+              }
+            }
           }
         }
       }
+    }
+
+    // 3. Planeta para Jugador 3 (si hay 3 jugadores): planeta sólido distinto a P1 y P2
+    let p3Planet: Planet | undefined;
+    if (count >= 3) {
+      p3Planet = candidatePlanets.find(p => p.id !== p1Planet.id && p.id !== p2Planet.id) || candidatePlanets[0];
     }
 
     const sAngle3 = (rng() > 0.5 ? 0.05 : Math.PI - 0.05) + (rng() - 0.5) * 0.25;
@@ -875,12 +918,13 @@ export class WarHeadsEngine {
         aimAngle: aimDeg,
         power: 65,
         weaponId: 1, // Standard Warhead (Free)
-        hp: 1800,
-        maxHp: 1800,
-        shield: 800,
-        maxShield: 800,
+        hp: 2200,
+        maxHp: 2200,
+        shield: 1000,
+        maxShield: 1000,
         fuel: 100,
         credits: 300, // Starting Credits
+        turnDamageTaken: 0,
         alive: true,
         color: sc.color,
         name: sc.name,
@@ -943,10 +987,15 @@ export class WarHeadsEngine {
     // Deduct cost
     currentShip.credits -= weapon.price;
 
+    // Reset de daño recibido por turno para blindaje inexpugnable (máximo 350 HP por turno)
+    for (const s of this.ships) {
+      s.turnDamageTaken = 0;
+    }
+
     const rad = (currentShip.aimAngle * Math.PI) / 180;
-    // Calibrated Power Curve:
-    // 10%-40%: suborbital arcs; 50%-75%: stable slingshots/orbits; >=80%: guaranteed hyperbolic escape velocity
-    const baseSpeed = (currentShip.power * 0.165 + 2.2) * weapon.speedMultiplier;
+    // Calibración balística elegante a velocidad pausada (vuelo visible de 2 a 6 segundos):
+    // 10%-40%: trayectorias suborbitales; 50%-75%: tirachinas y órbitas dramáticas de 2-3 vueltas; >=80%: velocidad de escape
+    const baseSpeed = (currentShip.power * 0.082 + 1.10) * weapon.speedMultiplier;
 
     const barrelLen = 22;
     const startX = currentShip.x + Math.cos(rad) * barrelLen;
@@ -973,7 +1022,8 @@ export class WarHeadsEngine {
           life: 0,
           maxLife: 900,
           trail: [],
-          recordedTrail: offsetDeg === 0 ? [{ x: px, y: py }] : undefined
+          recordedTrail: offsetDeg === 0 ? [{ x: px, y: py }] : undefined,
+          hasDetonated: false
         });
       }
     } else {
@@ -993,7 +1043,8 @@ export class WarHeadsEngine {
         isBorer: weapon.specialBehavior === 'tunnel',
         borerDist: 0,
         isMine: weapon.specialBehavior === 'mine',
-        isCrawler: weapon.specialBehavior === 'crawler'
+        isCrawler: weapon.specialBehavior === 'crawler',
+        hasDetonated: false
       });
     }
 
@@ -1180,9 +1231,9 @@ export class WarHeadsEngine {
         ship.y = planet.y + Math.sin(ship.surfaceAngle) * curDist;
 
         if (curDist <= minAllowableDist) {
-          ship.hp = 0;
-          ship.alive = false;
-          sound.playExplosion(40);
+          // Asentamiento seguro en la roca profunda: CERO muerte instantánea
+          ship.x = planet.x + Math.cos(ship.surfaceAngle) * minAllowableDist;
+          ship.y = planet.y + Math.sin(ship.surfaceAngle) * minAllowableDist;
           break;
         }
       }
@@ -1316,12 +1367,20 @@ export class WarHeadsEngine {
           zoneMultiplier = Math.pow(Math.max(0, 1 - ratio), 2) * 0.50; // Blast Radius
         }
 
-        // LÍMITE DE DAÑO ABSOLUTO (DAMAGE CAP):
-        // Ningún impacto individual puede infligir más de 450 HP de daño total.
-        // Imposible matar de 1 disparo (se requieren entre 5 y 9 impactos certeros).
-        const maxDamageCap = isShrapnel ? 30 : 450;
+        // BLINDAJE DE CÓDIGO ESTRICTO (HARD DAMAGE CAP):
+        // 1. Ninguna nave puede perder más de 350 HP totales en un solo turno (sin importar el arma o cuántas bombas detonen).
+        // 2. Ninguna nave puede perder más de 180 HP por impacto directo del arma gratuita (Proyectil Estándar).
+        // 3. Vida inicial: 2200 HP de casco + 1000 SP de escudo (3200 total).
+        // 4. CERO MUERTE INSTANTÁNEA: Imposible morir en menos de 8 a 15 disparos certeros directos.
+        const currentTurnDmg = ship.turnDamageTaken || 0;
+        const turnRemainingBudget = Math.max(0, 350 - currentTurnDmg);
+        if (turnRemainingBudget <= 0) {
+          continue; // Ya absorbió el tope inexpugnable de 350 HP este turno
+        }
+
+        const weaponMaxCap = isShrapnel ? 30 : (w.id === 1 ? 180 : 350);
         const calculatedDmg = Math.round(w.damage * zoneMultiplier);
-        const rawDmg = Math.min(maxDamageCap, calculatedDmg);
+        const rawDmg = Math.min(weaponMaxCap, Math.min(turnRemainingBudget, calculatedDmg));
 
         ship.lastHitTime = performance.now();
         const prevShield = ship.shield;
@@ -1335,12 +1394,13 @@ export class WarHeadsEngine {
         }
 
         if (w.specialBehavior === 'emp') {
-          // Pulso PEM: Daño a casco casi nulo (20 HP), pero neutraliza escudos y 50% del combustible
+          // Pulso PEM: Neutraliza escudos y 50% del combustible; daño a casco mínimo
           ship.shield = 0;
           ship.fuel = Math.max(0, Math.round(ship.fuel * 0.5));
-          const empDmg = Math.min(50, ship.shieldType === 'phase' ? 40 : 20);
+          const empDmg = Math.min(25, Math.min(turnRemainingBudget, ship.shieldType === 'phase' ? 40 : 20));
           finalHpLoss = Math.min(ship.hp, empDmg);
           ship.hp = Math.max(0, ship.hp - empDmg);
+          ship.turnDamageTaken = currentTurnDmg + finalHpLoss;
         } else if (w.specialBehavior === 'repulsor') {
           // Onda Repulsora: 40 HP (desancla a la nave rival de la roca y la empuja al vacío)
           if (ship.shieldType !== 'bastion') {
@@ -1353,8 +1413,9 @@ export class WarHeadsEngine {
             ship.jumpTrail = [];
             sound.playHyperJump();
           }
-          finalHpLoss = Math.min(ship.hp, Math.min(40, rawDmg));
+          finalHpLoss = Math.min(ship.hp, Math.min(40, Math.min(turnRemainingBudget, rawDmg)));
           ship.hp = Math.max(0, ship.hp - finalHpLoss);
+          ship.turnDamageTaken = currentTurnDmg + finalHpLoss;
         } else {
           let dmgToApply = rawDmg;
 
@@ -1364,7 +1425,7 @@ export class WarHeadsEngine {
           }
           // Cuántico de Fase: recibe daño aumentado por antimateria y armas exóticas
           if (ship.shieldType === 'phase' && (w.category === 'exotic' || w.specialBehavior === 'singularity' || w.specialBehavior === 'void')) {
-            dmgToApply = Math.min(maxDamageCap, Math.round(dmgToApply * 1.6));
+            dmgToApply = Math.min(turnRemainingBudget, Math.min(weaponMaxCap, Math.round(dmgToApply * 1.6)));
           }
 
           // Colector / Absorción: Convierte 60% del daño en recarga de combustible (+35%) y +30 CR
@@ -1375,24 +1436,30 @@ export class WarHeadsEngine {
             ship.credits += 30;
           }
 
-          // Bastión Pesado: absorbe 85% del daño con sus 1800 SP
+          // Absorción de escudo con tope de daño por turno
+          let absorbedByShield = 0;
           if (ship.shieldType === 'bastion' && ship.shield > 0) {
             const bastionAbsorb = Math.round(dmgToApply * 0.85);
-            const actualAbsorbed = Math.min(ship.shield, bastionAbsorb);
-            ship.shield -= actualAbsorbed;
-            dmgToApply -= actualAbsorbed;
+            absorbedByShield = Math.min(ship.shield, Math.min(turnRemainingBudget, bastionAbsorb));
+            ship.shield -= absorbedByShield;
+            dmgToApply -= absorbedByShield;
           } else if (ship.shield > 0) {
             // Deflector Estándar y escudos normales absorben el 70% del daño entrante antes de tocar el casco
             const shieldAbsorbable = Math.round(dmgToApply * 0.70);
-            const actualAbsorbed = Math.min(ship.shield, shieldAbsorbable);
-            ship.shield -= actualAbsorbed;
-            dmgToApply -= actualAbsorbed;
+            absorbedByShield = Math.min(ship.shield, Math.min(turnRemainingBudget, shieldAbsorbable));
+            ship.shield -= absorbedByShield;
+            dmgToApply -= absorbedByShield;
           }
 
-          // Tope máximo por impacto individual: nunca excede 450 HP (cero one-hit kills)
-          dmgToApply = Math.min(450, dmgToApply);
+          // Tope de daño al casco: estricto límite por turno y por arma
+          const hullBudget = Math.max(0, turnRemainingBudget - absorbedByShield);
+          dmgToApply = Math.min(dmgToApply, hullBudget);
+          if (w.id === 1) {
+            dmgToApply = Math.min(dmgToApply, 180);
+          }
           finalHpLoss = Math.min(ship.hp, dmgToApply);
           ship.hp = Math.max(0, ship.hp - dmgToApply);
+          ship.turnDamageTaken = currentTurnDmg + absorbedByShield + finalHpLoss;
         }
 
         const shieldLost = Math.round(prevShield - ship.shield);
@@ -1782,6 +1849,12 @@ export class WarHeadsEngine {
           p.vy *= 0.997;
           for (const ship of this.ships) {
             if (ship.alive && Math.hypot(p.x - ship.x, p.y - ship.y) < 80) {
+              if (p.hasDetonated) {
+                this.projectiles.splice(pIdx, 1);
+                destroyed = true;
+                break;
+              }
+              p.hasDetonated = true;
               this.detonate(p, p.x, p.y);
               this.projectiles.splice(pIdx, 1);
               destroyed = true;
@@ -1871,6 +1944,13 @@ export class WarHeadsEngine {
               continue; // Refleja hacia el atacante
             }
 
+            if (p.hasDetonated) {
+              this.projectiles.splice(pIdx, 1);
+              hitShip = true;
+              destroyed = true;
+              break;
+            }
+            p.hasDetonated = true;
             this.detonate(p, p.x, p.y);
             this.projectiles.splice(pIdx, 1);
             hitShip = true;
@@ -1957,6 +2037,13 @@ export class WarHeadsEngine {
               continue;
             }
 
+            if (p.hasDetonated) {
+              this.projectiles.splice(pIdx, 1);
+              hitPlanetSolid = true;
+              destroyed = true;
+              break;
+            }
+            p.hasDetonated = true;
             this.detonate(p, p.x, p.y, planet);
             this.projectiles.splice(pIdx, 1);
             hitPlanetSolid = true;
@@ -2176,6 +2263,9 @@ export class WarHeadsEngine {
           nextTurn = (nextTurn % total) + 1;
         }
         this.currentTurn = nextTurn as PlayerId;
+        for (const s of this.ships) {
+          s.turnDamageTaken = 0;
+        }
         this.onTurnChange?.(this.currentTurn);
       }
       this.onStateUpdate?.();
